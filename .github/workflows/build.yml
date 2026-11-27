@@ -77,14 +77,15 @@ jobs:
             ## 📱 Gia Sư Tư Duy — Phiên bản v${{ steps.ver.outputs.version }}
 
             ### Điểm mới ở bản v${{ steps.ver.outputs.version }}:
-            - ⚡ Tích hợp sẵn **Gemini 3.5 Flash-Lite** (mặc định: nhẹ, nhanh, tiết kiệm) và **Gemini 3.8 Flash**
-            - 🔄 Tự động chuyển dự phòng sang model Flash-Lite/Flash ổn định khác nếu model chính bận hoặc hết lượt
-            - ⚙️ Cho phép chọn model AI ngay trong phần Cài đặt
+            - 📖 Chế độ **Giải chi tiết chính xác** kết hợp tìm kiếm & đối chiếu nguồn **Lời Giải Hay, VietJack...** kèm hiển thị **tên nguồn tham khảo**
+            - 💡 Vẫn giữ tùy chọn chuyển nhanh sang **Chế độ Gợi mở Socratic** nếu muốn tự rèn tư duy
+            - 👨‍🎓 Tác giả: **Nguyễn Hồng Quang — Lớp 10A10 — THPT Châu Thành 1**
+            - ⚡ Hỗ trợ **Gemini 3.5 Flash-Lite**, **Gemini 3.8 Flash**, tự động dự phòng & hỗ trợ **Cloudflare Worker Proxy**
 
             ### Cách cài đặt:
             1. Tải file `.apk` bên dưới về điện thoại Android
             2. Mở file và nhấn **Cài đặt** (cho phép cài từ nguồn không xác định nếu cần)
-            3. Mở app → Nhấn ⚙️ → Dán Gemini API Key miễn phí của bạn → Chọn model nếu muốn
+            3. Mở app → Nhấn ⚙️ → Dán Gemini API Key miễn phí (hoặc Worker Proxy URL)
             4. Bắt đầu học! 🚀
 
             ### Lấy API Key miễn phí:

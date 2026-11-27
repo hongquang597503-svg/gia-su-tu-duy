@@ -45,10 +45,14 @@ flutter pub get
 flutter build apk --release
 ```
 
+## Tác giả
+
+- **Nguyễn Hồng Quang** — Lớp **10A10** — **THPT Châu Thành 1**
+
 ## Tech Stack
 
-- **Flutter** 3.24.5 (Dart) — Version **1.0.1**
-- **Google Gemini API** (`gemini-3.5-flash-lite`, `gemini-3.8-flash`, tự động dự phòng sang `gemini-2.5-flash-lite` / `gemini-2.5-flash`)
+- **Flutter** 3.24.5 (Dart) — Version **1.0.2**
+- **Google Gemini API** (`gemini-3.5-flash-lite`, `gemini-3.8-flash`, bật Google Search Grounding để đối chiếu & trích nguồn từ Lời Giải Hay, VietJack...)
 - **Packages**: `http`, `image_picker`, `shared_preferences`
 
 ## License

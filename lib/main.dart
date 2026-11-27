@@ -17,9 +17,12 @@ void main() {
   runApp(const GiaSuTuDuyApp());
 }
 
-// ─── Phiên bản & Cấu hình Model Gemini ─────────────────────
-const String appVersion = '1.0.1';
+// ─── Phiên bản, Tác giả & Cấu hình Model Gemini ─────────────
+const String appVersion = '1.0.2';
+const String authorName = 'Nguyễn Hồng Quang';
+const String authorClassSchool = 'Lớp 10A10 — THPT Châu Thành 1';
 const String defaultGeminiModel = 'gemini-3.5-flash-lite';
+const String defaultWorkerProxyUrl = '';
 
 class GeminiModelOption {
   final String id;
@@ -108,8 +111,23 @@ final List<Subject> subjects = [
   ),
 ];
 
-// ─── System Instruction (Socratic — Bộ não Gia Sư Tư Duy) ───
-const String systemInstruction = '''
+// ─── System Instruction 1: Giải chi tiết & Đối chiếu nguồn (Mặc định) ───
+const String detailedSystemInstruction = '''
+Bạn là "Gia Sư Tư Duy", trợ lý học tập thông minh dành cho học sinh phổ thông Việt Nam (Toán, Vật Lý, Hóa Học, Tiếng Anh), được phát triển bởi Nguyễn Hồng Quang (Lớp 10A10 - THPT Châu Thành 1).
+
+NHIỆM VỤ CHÍNH:
+1. Đưa ra lời giải ĐÚNG NHẤT, CHÍNH XÁC NHẤT và ĐẦY ĐỦ các bước cho đề bài học sinh gửi (bằng chữ hoặc ảnh) theo chương trình sách giáo khoa Việt Nam (Kết nối tri thức, Chân trời sáng tạo, Cánh diều).
+2. Khi có công cụ tìm kiếm Google (Google Search), hãy ưu tiên tìm và đối chiếu lời giải từ các nguồn học tập Việt Nam uy tín như Lời Giải Hay (loigiaihay.com), VietJack (vietjack.com), Hoc247, Tech12h... để đảm bảo kết quả chuẩn xác nhất.
+3. Kiểm tra cẩn thận lại mọi phép tính, công thức, đơn vị (Toán, Lý, Hóa) và cấu trúc ngữ pháp/nghĩa (Tiếng Anh) trước khi chốt đáp án cuối cùng.
+4. Trình bày sạch sẽ, thoáng mắt trên màn hình điện thoại:
+   - **Tóm tắt / Yêu cầu đề bài**
+   - **Lời giải chi tiết từng bước**
+   - **Đáp án cuối cùng**
+   - **Nguồn tham khảo**: Ghi rõ tên nguồn nếu đối chiếu được từ trang web (ví dụ: Lời Giải Hay, VietJack, Hoc247...) hoặc ghi "Theo kiến thức SGK phổ thông & phân tích trực tiếp" nếu không lấy từ web. Tuyệt đối KHÔNG bịa đặt tên trang web hay đường link không có thật.
+''';
+
+// ─── System Instruction 2: Chế độ Socratic (Gợi mở từng bước) ───
+const String socraticSystemInstruction = '''
 Bạn là một Gia sư Socratic tận tâm, kiên nhẫn dành cho học sinh phổ thông Việt Nam (Toán, Lý, Hóa, Tiếng Anh).
 
 NGUYÊN TẮC BẮT BUỘC:
@@ -126,18 +144,36 @@ NGUYÊN TẮC BẮT BUỘC:
 4. Văn phong: Thân thiện, xưng "mình" và gọi "bạn" (hoặc "thầy/cô - em"), trình bày ngắn gọn, thoáng mắt để dễ đọc trên màn hình điện thoại.
 ''';
 
+// ─── Model nguồn tham khảo trích xuất từ Google Search Grounding ───
+class SourceReference {
+  final String title;
+  final String uri;
+
+  const SourceReference({required this.title, required this.uri});
+}
+
+// ─── Model kết quả trả về từ API ────────────────────────────
+class _GeminiApiResult {
+  final String text;
+  final List<SourceReference> sources;
+
+  const _GeminiApiResult({required this.text, this.sources = const []});
+}
+
 // ─── Model tin nhắn ─────────────────────────────────────────
 class ChatMessage {
   final String role; // 'user' hoặc 'model'
   final String text;
   final String? imageBase64; // base64 ảnh đính kèm (chỉ user)
   final String? imageMimeType;
+  final List<SourceReference> sources; // danh sách nguồn tham khảo (chỉ model)
 
   const ChatMessage({
     required this.role,
     required this.text,
     this.imageBase64,
     this.imageMimeType,
+    this.sources = const [],
   });
 
   // Chuyển thành định dạng Gemini API
@@ -339,11 +375,32 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
 
   bool _isLoading = false;
+  bool _detailedMode = true; // Mặc định: giải chi tiết chính xác + ghi nguồn
   File? _selectedImage;      // ảnh đã chọn
   String? _imageBase64;      // base64 của ảnh
   String? _imageMimeType;    // mime type ảnh
 
   final ImagePicker _picker = ImagePicker();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadModePreference();
+  }
+
+  Future<void> _loadModePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _detailedMode = prefs.getBool('detailed_solution_mode') ?? true;
+    });
+  }
+
+  Future<void> _toggleSolveMode(bool detailed) async {
+    setState(() => _detailedMode = detailed);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('detailed_solution_mode', detailed);
+  }
 
   @override
   void dispose() {
@@ -440,14 +497,17 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _inputController.text.trim();
     if (text.isEmpty && _imageBase64 == null) return;
 
-    // Lấy API key và model đã chọn từ SharedPreferences
+    // Lấy API key, proxy URL và model đã chọn từ SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     final apiKey = prefs.getString('gemini_api_key') ?? '';
+    final savedProxy = prefs.getString('worker_proxy_url')?.trim() ?? '';
+    final proxyUrl =
+        savedProxy.isNotEmpty ? savedProxy : defaultWorkerProxyUrl;
     final selectedModel =
         prefs.getString('gemini_model') ?? defaultGeminiModel;
 
-    if (apiKey.isEmpty) {
-      _showError('Vui lòng nhập Gemini API Key trong cài đặt ⚙️');
+    if (apiKey.isEmpty && proxyUrl.isEmpty) {
+      _showError('Vui lòng nhập Gemini API Key hoặc Worker URL trong cài đặt ⚙️');
       return;
     }
 
@@ -470,23 +530,94 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
-      final aiResponse =
-          await _callGeminiAPI(apiKey, updatedHistory, selectedModel);
+      final result = await _callGeminiAPI(
+        apiKey: apiKey,
+        proxyUrl: proxyUrl,
+        history: updatedHistory,
+        preferredModel: selectedModel,
+        detailedMode: _detailedMode,
+      );
 
-      final aiMsg = ChatMessage(role: 'model', text: aiResponse);
+      final aiMsg = ChatMessage(
+        role: 'model',
+        text: result.text,
+        sources: result.sources,
+      );
       widget.onHistoryUpdate([...updatedHistory, aiMsg]);
     } catch (e) {
       _showError('Lỗi kết nối: $e');
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
       _scrollToBottom();
     }
   }
 
-  // Gọi Gemini API với cơ chế tự chuyển dự phòng (fallback) qua các model Flash/Lite
-  Future<String> _callGeminiAPI(
-      String apiKey, List<ChatMessage> history, String preferredModel) async {
-    // Thứ tự thử model: model đang chọn -> Flash-Lite -> Flash dự phòng
+  // Xây dựng payload gửi Gemini API
+  String _buildRequestBody(
+    List<ChatMessage> history, {
+    required bool detailedMode,
+    required bool useSearchGrounding,
+  }) {
+    final contents = history.map((m) => m.toApiContent()).toList();
+    final payload = <String, dynamic>{
+      'system_instruction': {
+        'parts': [
+          {
+            'text': detailedMode
+                ? detailedSystemInstruction
+                : socraticSystemInstruction,
+          }
+        ]
+      },
+      'contents': contents,
+      'generationConfig': {
+        'temperature': detailedMode ? 0.3 : 0.7,
+        'maxOutputTokens': 4096,
+      },
+    };
+
+    if (useSearchGrounding) {
+      payload['tools'] = [
+        {'google_search': {}}
+      ];
+    }
+
+    return jsonEncode(payload);
+  }
+
+  // Trích xuất nguồn tham khảo thực tế từ groundingMetadata (VietJack, Lời Giải Hay...)
+  List<SourceReference> _extractSources(Map<String, dynamic> data) {
+    final candidates = data['candidates'] as List<dynamic>?;
+    if (candidates == null || candidates.isEmpty) return const [];
+
+    final metadata = candidates[0]?['groundingMetadata'] as Map<String, dynamic>?;
+    final chunks = metadata?['groundingChunks'] as List<dynamic>?;
+    if (chunks == null) return const [];
+
+    final seenUris = <String>{};
+    final result = <SourceReference>[];
+
+    for (final chunk in chunks) {
+      final web = chunk?['web'] as Map<String, dynamic>?;
+      final uri = (web?['uri'] as String?)?.trim() ?? '';
+      if (uri.isEmpty || !seenUris.add(uri)) continue;
+
+      final rawTitle = (web?['title'] as String?)?.trim() ?? '';
+      final title = rawTitle.isNotEmpty ? rawTitle : uri;
+      result.add(SourceReference(title: title, uri: uri));
+    }
+
+    return result;
+  }
+
+  // Gọi Gemini API qua Worker Proxy hoặc trực tiếp, tự fallback nếu lỗi/bận
+  Future<_GeminiApiResult> _callGeminiAPI({
+    required String apiKey,
+    required String proxyUrl,
+    required List<ChatMessage> history,
+    required String preferredModel,
+    required bool detailedMode,
+  }) async {
     final candidateModels = <String>{
       preferredModel.trim().isEmpty ? defaultGeminiModel : preferredModel.trim(),
       'gemini-3.5-flash-lite',
@@ -495,56 +626,74 @@ class _ChatScreenState extends State<ChatScreen> {
       'gemini-3.8-flash',
     }.toList();
 
-    // Chuyển lịch sử chat thành định dạng API
-    final contents = history.map((m) => m.toApiContent()).toList();
-
-    final body = jsonEncode({
-      'system_instruction': {
-        'parts': [
-          {'text': systemInstruction}
-        ]
-      },
-      'contents': contents,
-      'generationConfig': {
-        'temperature': 0.7,
-        'maxOutputTokens': 2048,
-      },
-    });
+    final cleanProxy = proxyUrl.endsWith('/')
+        ? proxyUrl.substring(0, proxyUrl.length - 1)
+        : proxyUrl;
 
     Exception? lastError;
 
     for (final model in candidateModels) {
-      final endpoint =
-          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent';
+      // Thử bật Google Search Grounding trước khi ở chế độ giải chi tiết;
+      // nếu model/key báo 400 không hỗ trợ tool search, thử lại không có tool.
+      final searchAttempts = detailedMode ? [true, false] : [false];
 
-      final response = await http
-          .post(
-            Uri.parse('$endpoint?key=$apiKey'),
-            headers: {'Content-Type': 'application/json'},
-            body: body,
-          )
-          .timeout(const Duration(seconds: 60));
+      for (final useSearch in searchAttempts) {
+        final uri = cleanProxy.isNotEmpty
+            ? Uri.parse('$cleanProxy/v1beta/models/$model:generateContent')
+            : Uri.parse(
+                'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey',
+              );
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final text = data['candidates']?[0]?['content']?['parts']?[0]?['text']
-            as String?;
-        return text ?? '(Không có phản hồi)';
-      }
+        final response = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: _buildRequestBody(
+                history,
+                detailedMode: detailedMode,
+                useSearchGrounding: useSearch,
+              ),
+            )
+            .timeout(const Duration(seconds: 60));
 
-      String errMsg = 'Lỗi không xác định';
-      try {
-        final err = jsonDecode(response.body);
-        errMsg = err['error']?['message'] ?? errMsg;
-      } catch (_) {}
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          final parts =
+              data['candidates']?[0]?['content']?['parts'] as List<dynamic>?;
+          final text = parts
+                  ?.map((p) => p?['text'] as String?)
+                  .whereType<String>()
+                  .join('\n')
+                  .trim() ??
+              '';
+          final sources = _extractSources(data);
+          return _GeminiApiResult(
+            text: text.isNotEmpty ? text : '(Không có phản hồi)',
+            sources: sources,
+          );
+        }
 
-      lastError = Exception('API Error ${response.statusCode} ($model): $errMsg');
+        String errMsg = 'Lỗi không xác định';
+        try {
+          final err = jsonDecode(response.body);
+          errMsg = err['error']?['message'] ?? errMsg;
+        } catch (_) {}
 
-      // Chỉ thử sang model dự phòng nếu model không tồn tại (404) hoặc quá tải (429/503)
-      final shouldFallback = response.statusCode == 404 ||
-          response.statusCode == 429 ||
-          response.statusCode == 503;
-      if (!shouldFallback) {
+        lastError =
+            Exception('API Error ${response.statusCode} ($model): $errMsg');
+
+        // Nếu đang bật search mà bị 400 (model/key chưa hỗ trợ grounding) -> thử lại tắt search
+        if (useSearch && response.statusCode == 400) {
+          continue;
+        }
+
+        final shouldFallbackModel = response.statusCode == 404 ||
+            response.statusCode == 429 ||
+            response.statusCode == 503;
+        if (shouldFallbackModel) {
+          break; // Chuyển sang model dự phòng tiếp theo
+        }
+
         throw lastError;
       }
     }
@@ -571,6 +720,9 @@ class _ChatScreenState extends State<ChatScreen> {
       onTap: () => FocusScope.of(context).unfocus(),
       child: Column(
         children: [
+          // Thanh chuyển chế độ Giải chi tiết / Gợi mở Socratic
+          _buildModeBar(),
+
           // Danh sách tin nhắn
           Expanded(
             child: widget.history.isEmpty
@@ -597,57 +749,133 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // Màn hình trống khi chưa có tin nhắn
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+  // Thanh chọn nhanh chế độ trả lời & xóa cuộc trò chuyện
+  Widget _buildModeBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          bottom: BorderSide(color: Colors.grey.shade200),
+        ),
+      ),
+      child: Row(
         children: [
-          Text(
-            widget.subject.emoji,
-            style: const TextStyle(fontSize: 64),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Chào mừng đến với\nGia Sư Tư Duy!',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: widget.subject.color,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Hãy đặt câu hỏi về môn ${widget.subject.name}\nhoặc gửi ảnh bài tập để bắt đầu.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey.shade600,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: widget.subject.color.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                  color: widget.subject.color.withOpacity(0.2)),
-            ),
-            child: Text(
-              '💡 Gia sư sẽ dẫn dắt bạn tự tìm ra đáp án\nthay vì cho đáp án trực tiếp.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 13,
-                color: widget.subject.color,
-                height: 1.5,
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  ChoiceChip(
+                    label: const Text('📖 Giải chi tiết + Nguồn',
+                        style: TextStyle(fontSize: 12)),
+                    selected: _detailedMode,
+                    selectedColor: widget.subject.color.withOpacity(0.16),
+                    onSelected: (_) => _toggleSolveMode(true),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('💡 Gợi mở Socratic',
+                        style: TextStyle(fontSize: 12)),
+                    selected: !_detailedMode,
+                    selectedColor: widget.subject.color.withOpacity(0.16),
+                    onSelected: (_) => _toggleSolveMode(false),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
               ),
             ),
           ),
+          if (widget.history.isNotEmpty)
+            IconButton(
+              icon: Icon(Icons.delete_outline,
+                  size: 20, color: Colors.grey.shade600),
+              tooltip: 'Xóa lịch sử môn ${widget.subject.name}',
+              onPressed: () => widget.onHistoryUpdate([]),
+              visualDensity: VisualDensity.compact,
+            ),
         ],
+      ),
+    );
+  }
+
+  // Màn hình trống khi chưa có tin nhắn
+  Widget _buildEmptyState() {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              widget.subject.emoji,
+              style: const TextStyle(fontSize: 64),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Chào mừng đến với\nGia Sư Tư Duy!',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                color: widget.subject.color,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Hãy đặt câu hỏi về môn ${widget.subject.name}\nhoặc gửi ảnh bài tập để bắt đầu.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey.shade600,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: widget.subject.color.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: widget.subject.color.withOpacity(0.2)),
+              ),
+              child: Text(
+                _detailedMode
+                    ? '📖 Chế độ Giải chi tiết: AI phân tích, đối chiếu nguồn uy tín (Lời Giải Hay, VietJack...) và ghi rõ tên nguồn.'
+                    : '💡 Chế độ Socratic: Gia sư dẫn dắt từng bước giúp bạn tự tư duy ra đáp án.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: widget.subject.color,
+                  height: 1.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 24),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Text(
+                '👨‍🎓 $authorName • $authorClassSchool • v$appVersion',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -724,10 +952,81 @@ class _ChatScreenState extends State<ChatScreen> {
                       12,
                       msg.imageBase64 != null ? 8 : 10,
                       12,
-                      10,
+                      msg.sources.isNotEmpty && !isUser ? 6 : 10,
                     ),
                     child: _buildMessageText(msg.text, isUser),
                   ),
+
+                  // Hiển thị danh sách nguồn tham khảo thực tế (Lời Giải Hay, VietJack...)
+                  if (!isUser && msg.sources.isNotEmpty)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: widget.subject.color.withOpacity(0.25),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '📚 Nguồn tham khảo đã đối chiếu:',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              color: widget.subject.color,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          ...msg.sources.take(5).map(
+                                (src) => InkWell(
+                                  onTap: () async {
+                                    await Clipboard.setData(
+                                        ClipboardData(text: src.uri));
+                                    if (!mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                            'Đã sao chép link nguồn: ${src.title}'),
+                                        behavior: SnackBarBehavior.floating,
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
+                                  },
+                                  child: Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 2),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.link,
+                                            size: 13,
+                                            color: widget.subject.color),
+                                        const SizedBox(width: 4),
+                                        Expanded(
+                                          child: Text(
+                                            src.title,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: Colors.blue.shade800,
+                                              decoration:
+                                                  TextDecoration.underline,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -1072,6 +1371,7 @@ class SettingsSheet extends StatefulWidget {
 
 class _SettingsSheetState extends State<SettingsSheet> {
   final TextEditingController _keyController = TextEditingController();
+  final TextEditingController _proxyController = TextEditingController();
   String _selectedModel = defaultGeminiModel;
   bool _obscureText = true;
   bool _isSaving = false;
@@ -1083,10 +1383,11 @@ class _SettingsSheetState extends State<SettingsSheet> {
     _loadSettings();
   }
 
-  // Tải API key và model đã lưu
+  // Tải API key, proxy URL và model đã lưu
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final key = prefs.getString('gemini_api_key') ?? '';
+    final proxy = prefs.getString('worker_proxy_url') ?? defaultWorkerProxyUrl;
     final savedModel = prefs.getString('gemini_model') ?? defaultGeminiModel;
     final validModel = geminiModelOptions.any((m) => m.id == savedModel)
         ? savedModel
@@ -1094,17 +1395,19 @@ class _SettingsSheetState extends State<SettingsSheet> {
 
     setState(() {
       _keyController.text = key;
+      _proxyController.text = proxy;
       _selectedModel = validModel;
     });
   }
 
-  // Lưu API key và model
+  // Lưu API key, proxy URL và model
   Future<void> _saveSettings() async {
     final key = _keyController.text.trim();
-    if (key.isEmpty) {
+    final proxy = _proxyController.text.trim();
+    if (key.isEmpty && proxy.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Vui lòng nhập API Key'),
+          content: Text('Vui lòng nhập API Key hoặc Worker Proxy URL'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -1114,6 +1417,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
     setState(() => _isSaving = true);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('gemini_api_key', key);
+    await prefs.setString('worker_proxy_url', proxy);
     await prefs.setString('gemini_model', _selectedModel);
 
     setState(() {
@@ -1128,6 +1432,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
   @override
   void dispose() {
     _keyController.dispose();
+    _proxyController.dispose();
     super.dispose();
   }
 
@@ -1183,6 +1488,38 @@ class _SettingsSheetState extends State<SettingsSheet> {
               ),
 
               const SizedBox(height: 8),
+
+              // Thẻ thông tin tác giả
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: SubjectColors.toan.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                      color: SubjectColors.toan.withOpacity(0.25)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    Text(
+                      '👨‍🎓 Phát triển bởi: $authorName',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13.5,
+                        color: SubjectColors.toan,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      '$authorClassSchool • Phiên bản v$appVersion',
+                      style: TextStyle(fontSize: 12.5),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 12),
 
               // Hướng dẫn
               Container(
@@ -1276,6 +1613,25 @@ class _SettingsSheetState extends State<SettingsSheet> {
                     onPressed: () =>
                         setState(() => _obscureText = !_obscureText),
                   ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: const Color(0xFFF5F5F5),
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              // Ô nhập Worker Proxy URL (tùy chọn)
+              TextField(
+                controller: _proxyController,
+                keyboardType: TextInputType.url,
+                decoration: InputDecoration(
+                  labelText: 'Cloudflare Worker URL (Tùy chọn)',
+                  hintText: 'https://gia-su-proxy.xxxx.workers.dev',
+                  helperText: 'Nếu có Worker URL thì không cần nhập API Key',
+                  prefixIcon: const Icon(Icons.cloud_outlined),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
