@@ -1,0 +1,31 @@
+name: gia_su_tu_duy
+description: Ứng dụng gia sư Socratic cho học sinh Việt Nam — Gia Sư Tư Duy
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP client để gọi Gemini API
+  http: ^1.2.0
+
+  # Chọn ảnh từ camera hoặc thư viện
+  image_picker: ^1.1.2
+
+  # Lưu trữ API Key cục bộ
+  shared_preferences: ^2.3.2
+
+  # Icons Material mặc định
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
