@@ -1,1709 +1,1483 @@
 // ============================================================
-// GIA SƯ TƯ DUY — Ứng dụng gia sư Socratic cho học sinh Việt Nam
+// GIA SƯ TƯ DUY v1.0.4 — AI Mã Nguồn Mở Chạy Offline
 // Tệp duy nhất: lib/main.dart
+// AI: Qwen 2.5 (llama.cpp) — chạy hoàn toàn trên điện thoại
+// OCR: Google ML Kit — đọc chữ từ ảnh không cần mạng
+// Phát triển: Nguyễn Hồng Quang — 10A10 — THPT Châu Thành 1
 // ============================================================
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'package:llama_flutter_android/llama_flutter_android.dart' as llama;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-// ─── Hàm main ───────────────────────────────────────────────
-void main() {
+// ─── main ───────────────────────────────────────────────────
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ModelManager.instance.init();
   runApp(const GiaSuTuDuyApp());
 }
 
-// ─── Phiên bản, Tác giả & Cấu hình Model Gemini ─────────────
-const String appVersion = '1.0.3';
-const String authorName = 'Nguyễn Hồng Quang';
-const String authorClassSchool = 'Lớp 10A10 — THPT Châu Thành 1';
-const String defaultGeminiModel = 'gemini-3.5-flash-lite';
-const String defaultWorkerProxyUrl = '';
+// ─── Hằng số ────────────────────────────────────────────────
+const String appVersion    = '1.0.4';
+const String authorName    = 'Nguyễn Hồng Quang';
+const String authorSchool  = 'Lớp 10A10 — THPT Châu Thành 1';
 
-class GeminiModelOption {
-  final String id;
-  final String label;
-  final String subtitle;
+// ============================================================
+// MODEL MANAGEMENT
+// ============================================================
 
-  const GeminiModelOption({
-    required this.id,
-    required this.label,
-    required this.subtitle,
-  });
-}
-
-// Danh sách các model Flash / Flash-Lite (ưu tiên nhẹ, nhanh, free tier cao)
-const List<GeminiModelOption> geminiModelOptions = [
-  GeminiModelOption(
-    id: 'gemini-3.5-flash-lite',
-    label: 'Gemini 3.5 Flash-Lite (Khuyên dùng)',
-    subtitle: 'Siêu nhanh, nhẹ, tối ưu quota miễn phí',
-  ),
-  GeminiModelOption(
-    id: 'gemini-3.8-flash',
-    label: 'Gemini 3.8 Flash',
-    subtitle: 'Thế hệ mới, suy luận Toán/Lý/Hóa mạnh hơn',
-  ),
-  GeminiModelOption(
-    id: 'gemini-2.5-flash-lite',
-    label: 'Gemini 2.5 Flash-Lite',
-    subtitle: 'Bản nhẹ dự phòng ổn định',
-  ),
-  GeminiModelOption(
-    id: 'gemini-2.5-flash',
-    label: 'Gemini 2.5 Flash',
-    subtitle: 'Bản tiêu chuẩn cân bằng',
-  ),
-];
-
-// ─── Màu sắc cho từng môn học ───────────────────────────────
-class SubjectColors {
-  static const Color toan = Color(0xFF1565C0);     // Toán – Xanh dương
-  static const Color vatLy = Color(0xFF6A1B9A);    // Vật Lý – Tím
-  static const Color hoaHoc = Color(0xFF2E7D32);   // Hóa Học – Xanh lá
-  static const Color tiengAnh = Color(0xFFE65100); // Tiếng Anh – Cam
-}
-
-// ─── Model dữ liệu môn học ──────────────────────────────────
-class Subject {
+class ModelInfo {
   final String name;
-  final String emoji;
-  final Color color;
-  final String systemHint; // gợi ý thêm cho môn
-
-  const Subject({
-    required this.name,
-    required this.emoji,
-    required this.color,
-    required this.systemHint,
-  });
+  final String description;
+  final String fileName;
+  final String url;
+  final double sizeGB;
+  const ModelInfo({required this.name, required this.description,
+      required this.fileName, required this.url, required this.sizeGB});
 }
 
-// Danh sách 4 môn học
-final List<Subject> subjects = [
-  Subject(
-    name: 'Toán',
-    emoji: '📐',
-    color: SubjectColors.toan,
-    systemHint: 'Môn Toán học',
+enum ModelChoice { lite, standard }
+enum ModelState  { notDownloaded, downloading, loadingModel, ready, error }
+
+const Map<ModelChoice, ModelInfo> kModels = {
+  ModelChoice.lite: ModelInfo(
+    name        : 'Qwen 2.5 — 0.5B (Nhanh & Nhẹ)',
+    description : 'Điện thoại RAM ≥ 3 GB • Tải ~469 MB',
+    fileName    : 'qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    url         : 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF'
+                  '/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    sizeGB      : 0.47,
   ),
-  Subject(
-    name: 'Vật Lý',
-    emoji: '⚡',
-    color: SubjectColors.vatLy,
-    systemHint: 'Môn Vật Lý',
+  ModelChoice.standard: ModelInfo(
+    name        : 'Qwen 2.5 — 1.5B (Tiêu Chuẩn)',
+    description : 'Điện thoại RAM ≥ 5 GB • Tải ~1.04 GB',
+    fileName    : 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    url         : 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF'
+                  '/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    sizeGB      : 1.04,
   ),
-  Subject(
-    name: 'Hóa Học',
-    emoji: '🧪',
-    color: SubjectColors.hoaHoc,
-    systemHint: 'Môn Hóa Học',
-  ),
-  Subject(
-    name: 'Tiếng Anh',
-    emoji: '🌍',
-    color: SubjectColors.tiengAnh,
-    systemHint: 'Môn Tiếng Anh',
-  ),
-];
+};
 
-// ─── System Instruction 1: Giải chi tiết & Đối chiếu nguồn (Mặc định) ───
-const String detailedSystemInstruction = '''
-Bạn là "Gia Sư Tư Duy", trợ lý học tập thông minh dành cho học sinh phổ thông Việt Nam, được phát triển bởi Nguyễn Hồng Quang (Lớp 10A10 - THPT Châu Thành 1).
+class ModelManager extends ChangeNotifier {
+  static final ModelManager instance = ModelManager._();
+  ModelManager._();
 
-NHIỆM VỤ KHI NHẬN BÀI TẬP (CHỮ HOẶC ẢNH):
+  ModelState   _state            = ModelState.notDownloaded;
+  double       _progress         = 0;
+  int          _downloadedBytes  = 0;
+  int          _totalBytes       = 0;
+  String?      _errorMsg;
+  ModelChoice  _choice           = ModelChoice.lite;
 
-BƯỚC 1 — Nhận diện bài:
-- Nếu là ảnh: Đọc rõ đề bài, nhận diện tên bài/trang/sách giáo khoa (nếu có, ví dụ: "Bài 3 trang 15 SGK Toán 10").
-- Xác định môn học (Toán, Lý, Hóa, Tiếng Anh...) và bộ sách (Kết nối tri thức / Chân trời sáng tạo / Cánh diều).
+  ModelState  get state           => _state;
+  double      get progress        => _progress;
+  int         get downloadedBytes => _downloadedBytes;
+  int         get totalBytes      => _totalBytes;
+  String?     get errorMsg        => _errorMsg;
+  ModelChoice get choice          => _choice;
+  ModelInfo   get info            => kModels[_choice]!;
 
-BƯỚC 2 — Tra cứu lời giải:
-- Sử dụng Google Search để tìm lời giải trên:
-  🥇 ƯU TIÊN 1: vietjack.com — Tìm cụm từ "site:vietjack.com [tên bài]"
-  🥈 ƯU TIÊN 2: loigiaihay.com — Tìm cụm từ "site:loigiaihay.com [tên bài]"
-  🥉 Dự phòng: hoc247.net, tech12h.com, haylamdo.com
-- Lấy lời giải ĐẦY ĐỦ từ các trang này.
+  llama.LlamaController? _ctrl;
+  http.Client?           _httpClient;
+  bool                   _cancelDl = false;
 
-BƯỚC 3 — Trình bày kết quả:
-Trình bày theo cấu trúc:
+  // ─── Khởi tạo khi mở app ────────────────────────────────
+  Future<void> init() async {
+    final prefs = await SharedPreferences.getInstance();
+    final idx = (prefs.getInt('model_choice') ?? 0)
+        .clamp(0, ModelChoice.values.length - 1);
+    _choice = ModelChoice.values[idx];
 
-📋 **ĐỀ BÀI**: (tóm tắt yêu cầu)
+    // Thử load model đã chọn
+    final f = await _modelFile(_choice);
+    if (await f.exists()) { await _load(f); return; }
 
-📝 **LỜI GIẢI CHI TIẾT**:
-(Trình bày từng bước rõ ràng, đầy đủ)
+    // Thử model còn lại
+    for (final c in ModelChoice.values) {
+      if (c == _choice) continue;
+      final ff = await _modelFile(c);
+      if (await ff.exists()) { _choice = c; await _load(ff); return; }
+    }
+    _state = ModelState.notDownloaded;
+    notifyListeners();
+  }
 
-✅ **ĐÁP ÁN**: (kết quả cuối cùng)
+  Future<File> _modelFile(ModelChoice c) async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/${kModels[c]!.fileName}');
+  }
 
-🔗 **NGUỒN**: (Ghi rõ: VietJack / Lời Giải Hay / Hoc247 / ... hoặc "Phân tích theo SGK" nếu không tìm được trên web)
+  Future<bool> isDownloaded(ModelChoice c) async =>
+      (await _modelFile(c)).exists();
 
-QUY TẮC BẮT BUỘC:
-- KHÔNG bịa đặt tên trang web hay đường link không có thật.
-- Nếu tìm được lời giải trên VietJack hoặc Lời Giải Hay → trình bày lại ĐẦY ĐỦ từng bước từ nguồn đó.
-- Nếu không tìm được → tự giải theo kiến thức SGK và ghi "Phân tích theo SGK phổ thông".
-- Luôn kiểm tra lại phép tính, công thức, đơn vị trước khi chốt đáp án.
-- Trình bày ngắn gọn, dễ đọc trên điện thoại.
+  // ─── Tải model từ HuggingFace ───────────────────────────
+  Future<void> download(ModelChoice c) async {
+    _cancelDl      = false;
+    _choice        = c;
+    _state         = ModelState.downloading;
+    _progress      = 0;
+    _downloadedBytes = 0;
+    _totalBytes    = 0;
+    _errorMsg      = null;
+    notifyListeners();
+
+    final file = await _modelFile(c);
+    final info = kModels[c]!;
+
+    // Dừng model cũ nếu có
+    await _ctrl?.dispose();
+    _ctrl = null;
+
+    try {
+      _httpClient = http.Client();
+      final req = http.Request('GET', Uri.parse(info.url));
+      final res = await _httpClient!.send(req);
+
+      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+
+      _totalBytes = res.contentLength ??
+          (info.sizeGB * 1024 * 1024 * 1024).round();
+
+      final sink = file.openWrite();
+      try {
+        await for (final chunk in res.stream) {
+          if (_cancelDl) {
+            await sink.close();
+            if (await file.exists()) await file.delete();
+            _state = ModelState.notDownloaded;
+            notifyListeners();
+            return;
+          }
+          sink.add(chunk);
+          _downloadedBytes += chunk.length;
+          if (_totalBytes > 0) _progress = _downloadedBytes / _totalBytes;
+          notifyListeners();
+        }
+      } finally {
+        await sink.close();
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('model_choice', c.index);
+
+      await _load(file);
+    } catch (e) {
+      _state    = ModelState.error;
+      _errorMsg = 'Lỗi tải: $e';
+      if (await file.exists()) await file.delete();
+      notifyListeners();
+    } finally {
+      _httpClient = null;
+    }
+  }
+
+  void cancelDownload() {
+    _cancelDl = true;
+    _httpClient?.close();
+  }
+
+  // ─── Nạp model vào RAM ──────────────────────────────────
+  Future<void> _load(File file) async {
+    _state = ModelState.loadingModel;
+    notifyListeners();
+    try {
+      await _ctrl?.dispose();
+      _ctrl = llama.LlamaController();
+      final gpu = await _ctrl!.detectGpu();
+      await _ctrl!.loadModel(
+        modelPath  : file.path,
+        threads    : 4,
+        contextSize: 4096,
+        gpuLayers  : gpu.recommendedGpuLayers,
+      );
+      _state = ModelState.ready;
+    } catch (e) {
+      _state    = ModelState.error;
+      _errorMsg = 'Lỗi nạp model: $e';
+      _ctrl     = null;
+    }
+    notifyListeners();
+  }
+
+  // ─── Xóa model khỏi máy ─────────────────────────────────
+  Future<void> deleteModel() async {
+    if (_state == ModelState.ready || _state == ModelState.loadingModel) {
+      await _ctrl?.dispose();
+      _ctrl = null;
+    }
+    final f = await _modelFile(_choice);
+    if (await f.exists()) await f.delete();
+    _state = ModelState.notDownloaded;
+    notifyListeners();
+  }
+
+  // ─── Sinh câu trả lời (Stream token) ───────────────────
+  Stream<String> chat({
+    required List<AppMessage> history,
+    required bool detailed,
+    required String subject,
+  }) {
+    if (_ctrl == null || _state != ModelState.ready) {
+      return Stream.error(Exception('Model AI chưa sẵn sàng.'));
+    }
+    if (_ctrl!.isGenerating) {
+      return Stream.error(Exception('AI đang xử lý, vui lòng chờ.'));
+    }
+
+    final sys = detailed
+        ? _sysDetailed(subject)
+        : _sysSocratic(subject);
+
+    final msgs = <llama.ChatMessage>[
+      llama.ChatMessage(role: 'system', content: sys),
+    ];
+
+    for (final m in history) {
+      String c = m.text;
+      if (m.ocrText != null && m.ocrText!.isNotEmpty) {
+        c = '[Đề bài từ ảnh]\n${m.ocrText!}'
+            '${m.text.isNotEmpty ? '\n\n${m.text}' : ''}';
+      }
+      if (c.trim().isEmpty) c = '[Học sinh gửi ảnh đề bài]';
+      msgs.add(llama.ChatMessage(
+        role   : m.role == 'user' ? 'user' : 'assistant',
+        content: c.trim(),
+      ));
+    }
+
+    return _ctrl!.generateChat(
+      messages     : msgs,
+      maxTokens    : 2048,
+      temperature  : detailed ? 0.3 : 0.7,
+      topP         : 0.9,
+      topK         : 40,
+      repeatPenalty: 1.1,
+      template     : 'chatml',
+    );
+  }
+
+  Future<void> stop() async => _ctrl?.stop();
+
+  static String _sysDetailed(String sub) => '''
+Bạn là "Gia Sư Tư Duy", trợ lý học tập AI chạy hoàn toàn trên điện thoại dành cho học sinh phổ thông Việt Nam. Phát triển bởi Nguyễn Hồng Quang (Lớp 10A10 — THPT Châu Thành 1).
+
+Môn hiện tại: $sub
+
+NHIỆM VỤ:
+1. Đọc kỹ đề bài (có thể từ OCR ảnh chụp — kiểm tra lại nếu chữ bị nhận sai).
+2. Giải đầy đủ từng bước theo SGK Việt Nam (Kết nối tri thức / Chân trời sáng tạo / Cánh diều).
+3. Kiểm tra lại phép tính và công thức trước khi chốt đáp án.
+
+Trình bày:
+📋 **Đề bài**: (tóm tắt)
+📝 **Lời giải**: (từng bước chi tiết)
+✅ **Đáp án**: (kết quả cuối cùng)
+
+Dùng tiếng Việt. Ngắn gọn, dễ đọc trên điện thoại nhỏ.
 ''';
 
-// ─── System Instruction 2: Chế độ Socratic (Gợi mở từng bước) ───
-const String socraticSystemInstruction = '''
-Bạn là một Gia sư Socratic tận tâm, kiên nhẫn dành cho học sinh phổ thông Việt Nam (Toán, Lý, Hóa, Tiếng Anh).
+  static String _sysSocratic(String sub) => '''
+Bạn là gia sư Socratic kiên nhẫn, dành cho học sinh phổ thông Việt Nam. Môn: $sub.
 
-NGUYÊN TẮC BẮT BUỘC:
-
-1. TUYỆT ĐỐI KHÔNG giải trọn vẹn bài tập và KHÔNG đưa ra đáp án cuối cùng ngay lập tức, kể cả khi học sinh năn nỉ hoặc yêu cầu "giải nhanh giúp em".
-
-2. Chia nhỏ vấn đề: Khi nhận được đề bài (bằng chữ hoặc ảnh), hãy xác định kiến thức trọng tâm, tóm tắt ngắn gọn đề bài đang hỏi gì, sau đó chỉ đưa ra 1 gợi ý nhỏ hoặc 1 câu hỏi dẫn dắt đầu tiên để học sinh tự thực hiện bước 1.
-
-3. Phản hồi theo câu trả lời của học sinh:
-- Nếu học sinh làm đúng bước đó: Khen ngợi ngắn gọn và đặt câu hỏi gợi mở cho bước tiếp theo.
-- Nếu học sinh làm sai: Không chê bai, chỉ ra chỗ chưa hợp lý ở bước đó và gợi ý lại bằng một ví dụ dễ hiểu hơn.
-- Nếu học sinh bí hoàn toàn ("em không biết làm"): Gợi ý công thức hoặc quy tắc ngữ pháp liên quan, sau đó hỏi lại cách áp dụng vào số liệu/câu chữ trong bài.
-
-4. Văn phong: Thân thiện, xưng "mình" và gọi "bạn" (hoặc "thầy/cô - em"), trình bày ngắn gọn, thoáng mắt để dễ đọc trên màn hình điện thoại.
+NGUYÊN TẮC:
+- KHÔNG giải trọn bài ngay. Dẫn dắt học sinh tự tư duy.
+- Tóm tắt đề bài → Hỏi gợi mở bước 1.
+- Học sinh đúng → khen ngắn + hỏi bước tiếp.
+- Học sinh sai → chỉ nhẹ nhàng + gợi ý lại bằng ví dụ dễ hơn.
+Dùng tiếng Việt, xưng "mình", gọi "bạn".
 ''';
-
-// ─── Model nguồn tham khảo trích xuất từ Google Search Grounding ───
-class SourceReference {
-  final String title;
-  final String uri;
-
-  const SourceReference({required this.title, required this.uri});
 }
 
-// ─── Model kết quả trả về từ API ────────────────────────────
-class _GeminiApiResult {
-  final String text;
-  final List<SourceReference> sources;
+// ============================================================
+// OCR SERVICE
+// ============================================================
 
-  const _GeminiApiResult({required this.text, this.sources = const []});
+class OcrService {
+  static Future<String> read(File imageFile) async {
+    final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+    try {
+      final input  = InputImage.fromFile(imageFile);
+      final result = await recognizer.processImage(input);
+      return result.text.trim();
+    } catch (_) {
+      return '';
+    } finally {
+      await recognizer.close();
+    }
+  }
 }
 
-// ─── Model tin nhắn ─────────────────────────────────────────
-class ChatMessage {
-  final String role; // 'user' hoặc 'model'
-  final String text;
-  final String? imageBase64; // base64 ảnh đính kèm (chỉ user)
+// ============================================================
+// DATA MODELS
+// ============================================================
+
+class AppMessage {
+  final String  role;         // 'user' | 'model'
+  final String  text;
+  final String? imageBase64;
   final String? imageMimeType;
-  final List<SourceReference> sources; // danh sách nguồn tham khảo (chỉ model)
+  final String? ocrText;      // text trích từ ảnh bằng OCR
 
-  const ChatMessage({
+  const AppMessage({
     required this.role,
     required this.text,
     this.imageBase64,
     this.imageMimeType,
-    this.sources = const [],
+    this.ocrText,
   });
-
-  // Chuyển thành định dạng Gemini API
-  Map<String, dynamic> toApiContent() {
-    final List<Map<String, dynamic>> parts = [];
-
-    // Thêm ảnh nếu có
-    if (imageBase64 != null && imageMimeType != null) {
-      parts.add({
-        'inline_data': {
-          'mime_type': imageMimeType,
-          'data': imageBase64,
-        }
-      });
-    }
-
-    // Thêm text
-    if (text.isNotEmpty) {
-      parts.add({'text': text});
-    }
-
-    return {'role': role, 'parts': parts};
-  }
 }
 
+class Subject {
+  final String name;
+  final String emoji;
+  final Color  color;
+  final String hint;
+  const Subject({required this.name, required this.emoji,
+      required this.color, required this.hint});
+}
+
+class _Colors {
+  static const toan    = Color(0xFF1565C0);
+  static const vatLy   = Color(0xFF6A1B9A);
+  static const hoaHoc  = Color(0xFF2E7D32);
+  static const tiengAnh= Color(0xFFE65100);
+}
+
+final subjects = [
+  Subject(name:'Toán',      emoji:'📐', color:_Colors.toan,     hint:'Toán học'),
+  Subject(name:'Vật Lý',    emoji:'⚡', color:_Colors.vatLy,    hint:'Vật Lý'),
+  Subject(name:'Hóa Học',   emoji:'🧪', color:_Colors.hoaHoc,   hint:'Hóa Học'),
+  Subject(name:'Tiếng Anh', emoji:'🌍', color:_Colors.tiengAnh, hint:'Tiếng Anh'),
+];
+
 // ============================================================
-// App Root Widget
+// APP ROOT
 // ============================================================
 class GiaSuTuDuyApp extends StatelessWidget {
   const GiaSuTuDuyApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Gia Sư Tư Duy',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: SubjectColors.toan,
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFFAFAFA),
-      ),
-      home: const HomeScreen(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Gia Sư Tư Duy',
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData(
+      colorScheme: ColorScheme.fromSeed(seedColor: _Colors.toan),
+      useMaterial3: true,
+      scaffoldBackgroundColor: const Color(0xFFFAFAFA),
+    ),
+    home: const HomeScreen(),
+  );
 }
 
 // ============================================================
-// Màn hình chính với TabBar
+// HOME SCREEN
 // ============================================================
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-
-  // Lịch sử chat riêng cho từng môn học
-  final List<List<ChatMessage>> _histories =
-      List.generate(4, (_) => []);
-
-  int _currentSubjectIndex = 0;
+  late TabController _tab;
+  final _histories = List.generate(4, (_) => <AppMessage>[]);
+  int _subIdx = 0;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: subjects.length, vsync: this)
+    _tab = TabController(length: subjects.length, vsync: this)
       ..addListener(() {
-        if (!_tabController.indexIsChanging) {
-          setState(() {
-            _currentSubjectIndex = _tabController.index;
-          });
-        }
+        if (!_tab.indexIsChanging) setState(() => _subIdx = _tab.index);
       });
+    ModelManager.instance.addListener(_onModelChange);
   }
+
+  void _onModelChange() => setState(() {});
 
   @override
   void dispose() {
-    _tabController.dispose();
+    ModelManager.instance.removeListener(_onModelChange);
+    _tab.dispose();
     super.dispose();
   }
 
-  // Màu môn hiện tại
-  Color get _currentColor => subjects[_currentSubjectIndex].color;
+  Color get _color => subjects[_subIdx].color;
 
-  // Mở dialog cài đặt API key
-  void _openSettings() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => const SettingsSheet(),
-    );
-  }
+  void _openSettings() => showModalBottomSheet(
+    context: context, isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (_) => const SettingsSheet(),
+  );
 
   @override
   Widget build(BuildContext context) {
     return Theme(
-      // Áp dụng màu sắc theo môn học hiện tại
       data: Theme.of(context).copyWith(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: _currentColor,
-          brightness: Brightness.light,
-        ),
+            seedColor: _color, brightness: Brightness.light),
       ),
-      child: Scaffold(
-        appBar: AppBar(
-          backgroundColor: _currentColor,
-          foregroundColor: Colors.white,
-          elevation: 2,
-          title: Row(
-            children: [
-              Text(
-                subjects[_currentSubjectIndex].emoji,
-                style: const TextStyle(fontSize: 22),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Gia Sư Tư Duy — ${subjects[_currentSubjectIndex].name}',
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
+      child: Stack(
+        children: [
+          Scaffold(
+            appBar: AppBar(
+              backgroundColor: _color,
+              foregroundColor: Colors.white,
+              elevation: 2,
+              title: Row(children: [
+                Text(subjects[_subIdx].emoji,
+                    style: const TextStyle(fontSize: 22)),
+                const SizedBox(width: 8),
+                Flexible(child: Text(
+                  'Gia Sư Tư Duy — ${subjects[_subIdx].name}',
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700),
+                  overflow: TextOverflow.ellipsis,
+                )),
+              ]),
+              actions: [
+                // Model status chip
+                _ModelStatusChip(color: _color),
+                IconButton(
+                  icon: const Icon(Icons.settings_outlined),
+                  tooltip: 'Cài đặt',
+                  onPressed: _openSettings,
                 ),
+              ],
+              bottom: TabBar(
+                controller: _tab,
+                indicatorColor: Colors.white,
+                indicatorWeight: 3,
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white70,
+                labelStyle: const TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 13),
+                tabs: subjects
+                    .map((s) => Tab(text: '${s.emoji} ${s.name}'))
+                    .toList(),
               ),
-            ],
-          ),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.settings_outlined, color: Colors.white),
-              tooltip: 'Cài đặt API Key',
-              onPressed: _openSettings,
             ),
-          ],
-          bottom: TabBar(
-            controller: _tabController,
-            indicatorColor: Colors.white,
-            indicatorWeight: 3,
-            labelColor: Colors.white,
-            unselectedLabelColor: Colors.white70,
-            labelStyle: const TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-            ),
-            tabs: subjects
-                .map((s) => Tab(text: '${s.emoji} ${s.name}'))
-                .toList(),
-          ),
-        ),
-        body: TabBarView(
-          controller: _tabController,
-          children: List.generate(
-            subjects.length,
-            (i) => ChatScreen(
-              subject: subjects[i],
-              history: _histories[i],
-              onHistoryUpdate: (msgs) {
-                setState(() {
-                  _histories[i] = msgs;
-                });
-              },
+            body: TabBarView(
+              controller: _tab,
+              children: List.generate(subjects.length, (i) => ChatScreen(
+                subject  : subjects[i],
+                history  : _histories[i],
+                onUpdate : (msgs) => setState(() => _histories[i] = msgs),
+              )),
             ),
           ),
-        ),
+
+          // Overlay khi model chưa tải hoặc đang tải
+          if (ModelManager.instance.state == ModelState.notDownloaded ||
+              ModelManager.instance.state == ModelState.downloading   ||
+              ModelManager.instance.state == ModelState.loadingModel  ||
+              ModelManager.instance.state == ModelState.error)
+            const ModelOverlay(),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Chip trạng thái model nhỏ ──────────────────────────────
+class _ModelStatusChip extends StatelessWidget {
+  final Color color;
+  const _ModelStatusChip({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    final mm  = ModelManager.instance;
+    String lbl;
+    Color  bg;
+    switch (mm.state) {
+      case ModelState.ready:
+        lbl = '🧠 AI';
+        bg  = Colors.green.shade700;
+        break;
+      case ModelState.downloading:
+        lbl = '⬇️ ${(mm.progress * 100).toStringAsFixed(0)}%';
+        bg  = Colors.orange.shade700;
+        break;
+      case ModelState.loadingModel:
+        lbl = '⏳ Nạp';
+        bg  = Colors.orange.shade700;
+        break;
+      case ModelState.error:
+        lbl = '❌ Lỗi';
+        bg  = Colors.red.shade700;
+        break;
+      default:
+        lbl = '📥 Tải AI';
+        bg  = Colors.grey.shade600;
+    }
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Chip(
+        label: Text(lbl,
+            style: const TextStyle(
+                fontSize: 11, fontWeight: FontWeight.w700, color: Colors.white)),
+        backgroundColor: bg,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
     );
   }
 }
 
 // ============================================================
-// Màn hình Chat cho từng môn
+// MODEL OVERLAY (download / loading / error)
+// ============================================================
+class ModelOverlay extends StatefulWidget {
+  const ModelOverlay({super.key});
+  @override
+  State<ModelOverlay> createState() => _ModelOverlayState();
+}
+
+class _ModelOverlayState extends State<ModelOverlay> {
+  @override
+  Widget build(BuildContext context) {
+    final mm = ModelManager.instance;
+    return Material(
+      color: Colors.black.withOpacity(0.88),
+      child: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              // Header
+              const Text('🧠', style: TextStyle(fontSize: 64)),
+              const SizedBox(height: 12),
+              const Text('Gia Sư Tư Duy', style: TextStyle(
+                  color: Colors.white, fontSize: 24,
+                  fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              const Text('AI Mã Nguồn Mở — Không Cần Internet',
+                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+              const SizedBox(height: 24),
+
+              if (mm.state == ModelState.downloading)
+                _buildDownloading(mm)
+              else if (mm.state == ModelState.loadingModel)
+                _buildLoading()
+              else if (mm.state == ModelState.error)
+                _buildError(mm)
+              else
+                _buildChoose(),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Chọn model để tải
+  Widget _buildChoose() => Column(mainAxisSize: MainAxisSize.min, children:[
+    const Text('Chọn model AI để tải về máy:',
+        style: TextStyle(color: Colors.white70, fontSize: 14)),
+    const SizedBox(height: 16),
+    ...ModelChoice.values.map((c) {
+      final info = kModels[c]!;
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Card(
+          color: const Color(0xFF1E1E2E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => ModelManager.instance.download(c),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(children:[
+                Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children:[
+                    Text(info.name, style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w700,
+                        fontSize: 14)),
+                    const SizedBox(height: 4),
+                    Text(info.description, style: const TextStyle(
+                        color: Colors.white60, fontSize: 12.5)),
+                  ],
+                )),
+                const SizedBox(width: 12),
+                const Icon(Icons.download_rounded, color: Color(0xFF82B1FF), size: 28),
+              ]),
+            ),
+          ),
+        ),
+      );
+    }),
+    const SizedBox(height: 8),
+    const Text('⚡ Dùng mạng WiFi để tải. Chỉ tải 1 lần duy nhất.',
+        style: TextStyle(color: Colors.white38, fontSize: 11.5),
+        textAlign: TextAlign.center),
+  ]);
+
+  // Đang tải
+  Widget _buildDownloading(ModelManager mm) {
+    final dlMB = (mm.downloadedBytes / 1024 / 1024).toStringAsFixed(1);
+    final totMB = mm.totalBytes > 0
+        ? '${(mm.totalBytes / 1024 / 1024).toStringAsFixed(0)} MB'
+        : '...';
+    return Column(mainAxisSize: MainAxisSize.min, children:[
+      Text('Đang tải ${mm.info.name}',
+          style: const TextStyle(color: Colors.white, fontSize: 15,
+              fontWeight: FontWeight.w700),
+          textAlign: TextAlign.center),
+      const SizedBox(height: 20),
+      ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: LinearProgressIndicator(
+          value: mm.progress,
+          minHeight: 10,
+          backgroundColor: Colors.white24,
+          valueColor: const AlwaysStoppedAnimation(Color(0xFF82B1FF)),
+        ),
+      ),
+      const SizedBox(height: 10),
+      Text('$dlMB MB / $totMB  •  ${(mm.progress * 100).toStringAsFixed(1)}%',
+          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+      const SizedBox(height: 20),
+      TextButton.icon(
+        onPressed: () => ModelManager.instance.cancelDownload(),
+        icon: const Icon(Icons.cancel_outlined, color: Colors.redAccent),
+        label: const Text('Huỷ tải', style: TextStyle(color: Colors.redAccent)),
+      ),
+    ]);
+  }
+
+  // Đang nạp model
+  Widget _buildLoading() => Column(mainAxisSize: MainAxisSize.min, children:[
+    const CircularProgressIndicator(color: Color(0xFF82B1FF)),
+    const SizedBox(height: 16),
+    const Text('Đang nạp AI vào bộ nhớ…',
+        style: TextStyle(color: Colors.white, fontSize: 15)),
+    const SizedBox(height: 8),
+    const Text('Lần đầu có thể mất 10–30 giây',
+        style: TextStyle(color: Colors.white54, fontSize: 12.5)),
+  ]);
+
+  // Lỗi
+  Widget _buildError(ModelManager mm) => Column(mainAxisSize: MainAxisSize.min, children:[
+    const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+    const SizedBox(height: 12),
+    Text(mm.errorMsg ?? 'Có lỗi xảy ra',
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+        textAlign: TextAlign.center),
+    const SizedBox(height: 20),
+    FilledButton.icon(
+      onPressed: () => setState(() {}),
+      icon: const Icon(Icons.refresh),
+      label: const Text('Thử lại'),
+      style: FilledButton.styleFrom(backgroundColor: const Color(0xFF82B1FF)),
+    ),
+  ]);
+}
+
+// ============================================================
+// CHAT SCREEN
 // ============================================================
 class ChatScreen extends StatefulWidget {
-  final Subject subject;
-  final List<ChatMessage> history;
-  final ValueChanged<List<ChatMessage>> onHistoryUpdate;
-
-  const ChatScreen({
-    super.key,
-    required this.subject,
-    required this.history,
-    required this.onHistoryUpdate,
-  });
-
+  final Subject             subject;
+  final List<AppMessage>    history;
+  final ValueChanged<List<AppMessage>> onUpdate;
+  const ChatScreen({super.key, required this.subject,
+      required this.history, required this.onUpdate});
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  final TextEditingController _inputController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
+  final _input    = TextEditingController();
+  final _scroll   = ScrollController();
+  final _picker   = ImagePicker();
 
-  bool _isLoading = false;
-  bool _detailedMode = true; // Mặc định: giải chi tiết chính xác + ghi nguồn
-  File? _selectedImage;      // ảnh đã chọn
-  String? _imageBase64;      // base64 của ảnh
-  String? _imageMimeType;    // mime type ảnh
+  bool   _detailed     = true;
+  bool   _isOcring     = false;
+  bool   _isStreaming  = false;
+  String _streaming    = '';
+  StreamSubscription<String>? _sub;
 
-  final ImagePicker _picker = ImagePicker();
+  File?   _img;
+  String? _imgB64;
+  String? _imgMime;
+  String? _ocrText;
 
   @override
   void initState() {
     super.initState();
-    _loadModePreference();
+    _loadMode();
   }
 
-  Future<void> _loadModePreference() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _detailedMode = prefs.getBool('detailed_solution_mode') ?? true;
-    });
+  Future<void> _loadMode() async {
+    final p = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _detailed = p.getBool('detailed_mode') ?? true);
   }
 
-  Future<void> _toggleSolveMode(bool detailed) async {
-    setState(() => _detailedMode = detailed);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('detailed_solution_mode', detailed);
+  Future<void> _toggleMode(bool v) async {
+    setState(() => _detailed = v);
+    (await SharedPreferences.getInstance()).setBool('detailed_mode', v);
   }
 
   @override
   void dispose() {
-    _inputController.dispose();
-    _scrollController.dispose();
+    _sub?.cancel();
+    ModelManager.instance.stop();
+    _input.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
-  // Cuộn xuống cuối danh sách tin nhắn
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
+  void _scrollBottom() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (_scroll.hasClients) {
+      _scroll.animateTo(_scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 280), curve: Curves.easeOut);
+    }
+  });
 
-  // Chọn ảnh từ camera hoặc thư viện
-  Future<void> _pickImage(ImageSource source) async {
+  // ─── Chọn ảnh ─────────────────────────────────────────────
+  Future<void> _pickImage(ImageSource src) async {
     try {
-      final XFile? picked = await _picker.pickImage(
-        source: source,
-        imageQuality: 85,
-        maxWidth: 1920,
-        maxHeight: 1920,
-      );
-      if (picked == null) return;
-
-      final File file = File(picked.path);
+      final x = await _picker.pickImage(source:src, imageQuality:85,
+          maxWidth:1920, maxHeight:1920);
+      if (x == null) return;
+      final file  = File(x.path);
       final bytes = await file.readAsBytes();
-      final base64Str = base64Encode(bytes);
-
-      // Xác định mime type từ extension
-      final ext = picked.path.split('.').last.toLowerCase();
-      final mime = ext == 'png' ? 'image/png' : 'image/jpeg';
+      final b64   = base64Encode(bytes);
+      final ext   = x.path.split('.').last.toLowerCase();
+      final mime  = ext == 'png' ? 'image/png' : 'image/jpeg';
 
       setState(() {
-        _selectedImage = file;
-        _imageBase64 = base64Str;
-        _imageMimeType = mime;
+        _img      = file;
+        _imgB64   = b64;
+        _imgMime  = mime;
+        _ocrText  = null;
+        _isOcring = true;
       });
+
+      // OCR tự động
+      final ocr = await OcrService.read(file);
+      if (mounted) setState(() { _ocrText = ocr; _isOcring = false; });
     } catch (e) {
-      _showError('Không thể chọn ảnh: $e');
+      if (mounted) setState(() => _isOcring = false);
+      _err('Không thể chọn ảnh: $e');
     }
   }
 
-  // Hiển thị menu chọn nguồn ảnh
-  void _showImageSourceMenu() {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+  void _showImgMenu() => showModalBottomSheet(
+    context: context,
+    shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+    builder: (_) => SafeArea(child: Wrap(children:[
+      ListTile(
+        leading: Icon(Icons.camera_alt, color: widget.subject.color),
+        title: const Text('Chụp ảnh đề bài'),
+        onTap: (){ Navigator.pop(context); _pickImage(ImageSource.camera); },
       ),
-      builder: (_) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: Icon(Icons.camera_alt, color: widget.subject.color),
-              title: const Text('Chụp ảnh bài tập'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.photo_library, color: widget.subject.color),
-              title: const Text('Chọn từ thư viện'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.gallery);
-              },
-            ),
-          ],
-        ),
+      ListTile(
+        leading: Icon(Icons.photo_library, color: widget.subject.color),
+        title: const Text('Chọn từ thư viện'),
+        onTap: (){ Navigator.pop(context); _pickImage(ImageSource.gallery); },
       ),
-    );
-  }
+    ])),
+  );
 
-  // Xóa ảnh đã chọn
-  void _clearImage() {
-    setState(() {
-      _selectedImage = null;
-      _imageBase64 = null;
-      _imageMimeType = null;
-    });
-  }
+  void _clearImg() => setState(() {
+    _img=null; _imgB64=null; _imgMime=null; _ocrText=null;
+  });
 
-  // Gửi tin nhắn
-  Future<void> _sendMessage() async {
-    final text = _inputController.text.trim();
-    if (text.isEmpty && _imageBase64 == null) return;
-
-    // Lấy API key, proxy URL và model đã chọn từ SharedPreferences
-    final prefs = await SharedPreferences.getInstance();
-    final apiKey = prefs.getString('gemini_api_key') ?? '';
-    final savedProxy = prefs.getString('worker_proxy_url')?.trim() ?? '';
-    final proxyUrl =
-        savedProxy.isNotEmpty ? savedProxy : defaultWorkerProxyUrl;
-    final selectedModel =
-        prefs.getString('gemini_model') ?? defaultGeminiModel;
-
-    if (apiKey.isEmpty && proxyUrl.isEmpty) {
-      _showError('Vui lòng nhập Gemini API Key hoặc Worker URL trong cài đặt ⚙️');
+  // ─── Gửi tin nhắn ─────────────────────────────────────────
+  Future<void> _send() async {
+    if (ModelManager.instance.state != ModelState.ready) {
+      _err('AI chưa sẵn sàng. Vui lòng tải model trước.');
       return;
     }
+    final txt = _input.text.trim();
+    if (txt.isEmpty && _img == null) return;
+    if (_isStreaming || _isOcring) return;
 
-    // Thêm tin nhắn của người dùng vào lịch sử
-    final userMsg = ChatMessage(
-      role: 'user',
-      text: text,
-      imageBase64: _imageBase64,
-      imageMimeType: _imageMimeType,
+    final userMsg = AppMessage(
+      role         : 'user',
+      text         : txt,
+      imageBase64  : _imgB64,
+      imageMimeType: _imgMime,
+      ocrText      : _ocrText,
     );
 
-    final updatedHistory = [...widget.history, userMsg];
-    widget.onHistoryUpdate(updatedHistory);
+    final hist = [...widget.history, userMsg];
+    widget.onUpdate(hist);
+    _input.clear();
+    _clearImg();
 
-    // Reset ô nhập
-    _inputController.clear();
-    _clearImage();
+    setState(() { _isStreaming = true; _streaming = ''; });
+    _scrollBottom();
 
-    setState(() => _isLoading = true);
-    _scrollToBottom();
+    final stream = ModelManager.instance.chat(
+      history : hist,
+      detailed: _detailed,
+      subject : widget.subject.hint,
+    );
 
-    try {
-      final result = await _callGeminiAPI(
-        apiKey: apiKey,
-        proxyUrl: proxyUrl,
-        history: updatedHistory,
-        preferredModel: selectedModel,
-        detailedMode: _detailedMode,
-      );
-
-      final aiMsg = ChatMessage(
-        role: 'model',
-        text: result.text,
-        sources: result.sources,
-      );
-      widget.onHistoryUpdate([...updatedHistory, aiMsg]);
-    } catch (e) {
-      _showError('Lỗi kết nối: $e');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-      _scrollToBottom();
-    }
-  }
-
-  // Xây dựng payload gửi Gemini API
-  String _buildRequestBody(
-    List<ChatMessage> history, {
-    required bool detailedMode,
-    required bool useSearchGrounding,
-  }) {
-    final contents = history.map((m) => m.toApiContent()).toList();
-    final payload = <String, dynamic>{
-      'system_instruction': {
-        'parts': [
-          {
-            'text': detailedMode
-                ? detailedSystemInstruction
-                : socraticSystemInstruction,
-          }
-        ]
+    _sub = stream.listen(
+      (tok) {
+        if (mounted) {
+          setState(() => _streaming += tok);
+          _scrollBottom();
+        }
       },
-      'contents': contents,
-      'generationConfig': {
-        'temperature': detailedMode ? 0.3 : 0.7,
-        'maxOutputTokens': 4096,
+      onDone: () {
+        if (!mounted) return;
+        final txt = _streaming.trim().isNotEmpty ? _streaming.trim()
+            : '(Không có phản hồi)';
+        widget.onUpdate([...hist, AppMessage(role:'model', text:txt)]);
+        setState(() { _isStreaming = false; _streaming = ''; });
+        _scrollBottom();
       },
-    };
-
-    if (useSearchGrounding) {
-      payload['tools'] = [
-        {'google_search': {}}
-      ];
-    }
-
-    return jsonEncode(payload);
+      onError: (e) {
+        if (!mounted) return;
+        _err('Lỗi AI: $e');
+        setState(() { _isStreaming = false; _streaming = ''; });
+      },
+      cancelOnError: true,
+    );
   }
 
-  // Trích xuất nguồn tham khảo thực tế từ groundingMetadata (VietJack, Lời Giải Hay...)
-  List<SourceReference> _extractSources(Map<String, dynamic> data) {
-    final candidates = data['candidates'] as List<dynamic>?;
-    if (candidates == null || candidates.isEmpty) return const [];
-
-    final metadata = candidates[0]?['groundingMetadata'] as Map<String, dynamic>?;
-    final chunks = metadata?['groundingChunks'] as List<dynamic>?;
-    if (chunks == null) return const [];
-
-    final seenUris = <String>{};
-    final result = <SourceReference>[];
-
-    for (final chunk in chunks) {
-      final web = chunk?['web'] as Map<String, dynamic>?;
-      final uri = (web?['uri'] as String?)?.trim() ?? '';
-      if (uri.isEmpty || !seenUris.add(uri)) continue;
-
-      final rawTitle = (web?['title'] as String?)?.trim() ?? '';
-      final title = rawTitle.isNotEmpty ? rawTitle : uri;
-      result.add(SourceReference(title: title, uri: uri));
-    }
-
-    return result;
-  }
-
-  // Gọi Gemini API qua Worker Proxy hoặc trực tiếp, tự fallback nếu lỗi/bận
-  Future<_GeminiApiResult> _callGeminiAPI({
-    required String apiKey,
-    required String proxyUrl,
-    required List<ChatMessage> history,
-    required String preferredModel,
-    required bool detailedMode,
-  }) async {
-    final candidateModels = <String>{
-      preferredModel.trim().isEmpty ? defaultGeminiModel : preferredModel.trim(),
-      'gemini-3.5-flash-lite',
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash',
-      'gemini-3.8-flash',
-    }.toList();
-
-    final cleanProxy = proxyUrl.endsWith('/')
-        ? proxyUrl.substring(0, proxyUrl.length - 1)
-        : proxyUrl;
-
-    Exception? lastError;
-
-    for (final model in candidateModels) {
-      // Thử bật Google Search Grounding trước khi ở chế độ giải chi tiết;
-      // nếu model/key báo 400 không hỗ trợ tool search, thử lại không có tool.
-      final searchAttempts = detailedMode ? [true, false] : [false];
-
-      for (final useSearch in searchAttempts) {
-        final uri = cleanProxy.isNotEmpty
-            ? Uri.parse('$cleanProxy/v1beta/models/$model:generateContent')
-            : Uri.parse(
-                'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey',
-              );
-
-        final response = await http
-            .post(
-              uri,
-              headers: {'Content-Type': 'application/json'},
-              body: _buildRequestBody(
-                history,
-                detailedMode: detailedMode,
-                useSearchGrounding: useSearch,
-              ),
-            )
-            .timeout(const Duration(seconds: 60));
-
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body) as Map<String, dynamic>;
-          final parts =
-              data['candidates']?[0]?['content']?['parts'] as List<dynamic>?;
-          final text = parts
-                  ?.map((p) => p?['text'] as String?)
-                  .whereType<String>()
-                  .join('\n')
-                  .trim() ??
-              '';
-          final sources = _extractSources(data);
-          return _GeminiApiResult(
-            text: text.isNotEmpty ? text : '(Không có phản hồi)',
-            sources: sources,
-          );
-        }
-
-        String errMsg = 'Lỗi không xác định';
-        try {
-          final err = jsonDecode(response.body);
-          errMsg = err['error']?['message'] ?? errMsg;
-        } catch (_) {}
-
-        lastError =
-            Exception('API Error ${response.statusCode} ($model): $errMsg');
-
-        // Nếu đang bật search mà bị 400 (model/key chưa hỗ trợ grounding) -> thử lại tắt search
-        if (useSearch && response.statusCode == 400) {
-          continue;
-        }
-
-        final shouldFallbackModel = response.statusCode == 404 ||
-            response.statusCode == 429 ||
-            response.statusCode == 503;
-        if (shouldFallbackModel) {
-          break; // Chuyển sang model dự phòng tiếp theo
-        }
-
-        throw lastError;
-      }
-    }
-
-    throw lastError ?? Exception('Không thể kết nối tới các model Gemini');
-  }
-
-  // Hiển thị thông báo lỗi
-  void _showError(String msg) {
+  void _err(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: Colors.red.shade700,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg), backgroundColor: Colors.red.shade700,
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
+  // ─── BUILD ────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      // Ẩn bàn phím khi nhấn ra ngoài
       onTap: () => FocusScope.of(context).unfocus(),
-      child: Column(
-        children: [
-          // Thanh chuyển chế độ Giải chi tiết / Gợi mở Socratic
-          _buildModeBar(),
-
-          // Danh sách tin nhắn
-          Expanded(
-            child: widget.history.isEmpty
-                ? _buildEmptyState()
-                : ListView.builder(
-                    controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 12, horizontal: 12),
-                    itemCount: widget.history.length + (_isLoading ? 1 : 0),
-                    itemBuilder: (ctx, i) {
-                      if (i == widget.history.length) {
-                        // Hiển thị indicator đang tải
-                        return _buildLoadingBubble();
-                      }
-                      return _buildMessageBubble(widget.history[i]);
-                    },
-                  ),
-          ),
-
-          // Khu vực nhập liệu
-          _buildInputArea(),
-        ],
-      ),
+      child: Column(children:[
+        _modeBar(),
+        Expanded(child: widget.history.isEmpty && !_isStreaming
+            ? _emptyState()
+            : _msgList()),
+        _inputArea(),
+      ]),
     );
   }
 
-  // Thanh chọn nhanh chế độ trả lời & xóa cuộc trò chuyện
-  Widget _buildModeBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(
-          bottom: BorderSide(color: Colors.grey.shade200),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  ChoiceChip(
-                    label: const Text('📖 Giải chi tiết + Nguồn',
-                        style: TextStyle(fontSize: 12)),
-                    selected: _detailedMode,
-                    selectedColor: widget.subject.color.withOpacity(0.16),
-                    onSelected: (_) => _toggleSolveMode(true),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  const SizedBox(width: 8),
-                  ChoiceChip(
-                    label: const Text('💡 Gợi mở Socratic',
-                        style: TextStyle(fontSize: 12)),
-                    selected: !_detailedMode,
-                    selectedColor: widget.subject.color.withOpacity(0.16),
-                    onSelected: (_) => _toggleSolveMode(false),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ],
-              ),
-            ),
+  Widget _modeBar() => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    decoration: BoxDecoration(color: Colors.white,
+        border: Border(bottom: BorderSide(color: Colors.grey.shade200))),
+    child: Row(children:[
+      Expanded(child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children:[
+          ChoiceChip(
+            label: const Text('📖 Giải chi tiết',
+                style: TextStyle(fontSize: 12)),
+            selected: _detailed,
+            selectedColor: widget.subject.color.withOpacity(0.16),
+            onSelected: (_) => _toggleMode(true),
+            visualDensity: VisualDensity.compact,
           ),
-          if (widget.history.isNotEmpty)
-            IconButton(
-              icon: Icon(Icons.delete_outline,
-                  size: 20, color: Colors.grey.shade600),
-              tooltip: 'Xóa lịch sử môn ${widget.subject.name}',
-              onPressed: () => widget.onHistoryUpdate([]),
-              visualDensity: VisualDensity.compact,
-            ),
-        ],
-      ),
-    );
-  }
-
-  // Màn hình trống khi chưa có tin nhắn
-  Widget _buildEmptyState() {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              widget.subject.emoji,
-              style: const TextStyle(fontSize: 64),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Chào mừng đến với\nGia Sư Tư Duy!',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: widget.subject.color,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Hãy đặt câu hỏi về môn ${widget.subject.name}\nhoặc gửi ảnh bài tập để bắt đầu.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade600,
-                height: 1.5,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: widget.subject.color.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                    color: widget.subject.color.withOpacity(0.2)),
-              ),
-              child: Text(
-                _detailedMode
-                    ? '📖 Chụp ảnh hoặc nhập bài tập → AI tự tra cứu lời giải trên VietJack, Lời Giải Hay và trình bày đầy đủ từng bước. Nguồn được ghi rõ cuối mỗi câu trả lời.'
-                    : '💡 Chế độ Socratic: Gia sư dẫn dắt từng bước giúp bạn tự tư duy ra đáp án.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 13,
-                  color: widget.subject.color,
-                  height: 1.5,
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 24),
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Text(
-                '👨‍🎓 $authorName • $authorClassSchool • v$appVersion',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade700,
-                ),
-              ),
+          const SizedBox(width: 8),
+          ChoiceChip(
+            label: const Text('💡 Gợi mở',
+                style: TextStyle(fontSize: 12)),
+            selected: !_detailed,
+            selectedColor: widget.subject.color.withOpacity(0.16),
+            onSelected: (_) => _toggleMode(false),
+            visualDensity: VisualDensity.compact,
+          ),
+          if (_isStreaming) ...[ const SizedBox(width: 8),
+            TextButton.icon(
+              onPressed: () { _sub?.cancel(); ModelManager.instance.stop();
+                setState(() { _isStreaming = false; _streaming = ''; }); },
+              icon: const Icon(Icons.stop_circle_outlined, size: 16),
+              label: const Text('Dừng', style: TextStyle(fontSize: 12)),
+              style: TextButton.styleFrom(foregroundColor: Colors.red,
+                  visualDensity: VisualDensity.compact),
             ),
           ],
+        ]),
+      )),
+      if (widget.history.isNotEmpty)
+        IconButton(
+          icon: Icon(Icons.delete_outline, size: 20, color: Colors.grey.shade600),
+          tooltip: 'Xóa lịch sử',
+          onPressed: () => widget.onUpdate([]),
+          visualDensity: VisualDensity.compact,
         ),
-      ),
-    );
-  }
+    ]),
+  );
 
-  // Bubble tin nhắn
-  Widget _buildMessageBubble(ChatMessage msg) {
-    final isUser = msg.role == 'user';
+  Widget _msgList() => ListView.builder(
+    controller : _scroll,
+    padding    : const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+    itemCount  : widget.history.length + (_isStreaming ? 1 : 0),
+    itemBuilder: (ctx, i) {
+      if (i == widget.history.length) {
+        return _streaming.isNotEmpty
+            ? _bubble(AppMessage(role:'model', text:_streaming), streaming:true)
+            : _loadingBubble();
+      }
+      return _bubble(widget.history[i]);
+    },
+  );
 
+  Widget _emptyState() => Center(
+    child: SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(mainAxisSize: MainAxisSize.min, children:[
+        Text(widget.subject.emoji, style: const TextStyle(fontSize: 72)),
+        const SizedBox(height: 16),
+        Text('Gia Sư Tư Duy', style: TextStyle(
+            fontSize: 22, fontWeight: FontWeight.w800,
+            color: widget.subject.color)),
+        const SizedBox(height: 8),
+        Text('Hỏi bài về môn ${widget.subject.name}\nhoặc gửi ảnh đề bài để bắt đầu.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 14, height: 1.5)),
+        const SizedBox(height: 16),
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: widget.subject.color.withOpacity(0.07),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: widget.subject.color.withOpacity(0.2)),
+          ),
+          child: Text(
+            _detailed
+              ? '📸 Chụp ảnh đề bài → AI tự đọc chữ (OCR) và giải ngay trên máy — không cần mạng!'
+              : '💡 Gia sư gợi mở từng bước để bạn tự tư duy ra đáp án.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: widget.subject.color, height: 1.5),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Text('👨‍🎓 $authorName • $authorSchool • v$appVersion',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w600)),
+        ),
+      ]),
+    ),
+  );
+
+  // ─── Bubble tin nhắn ──────────────────────────────────────
+  Widget _bubble(AppMessage m, {bool streaming = false}) {
+    final isUser = m.role == 'user';
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         mainAxisAlignment:
             isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // Avatar AI
-          if (!isUser) ...[
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: widget.subject.color.withOpacity(0.15),
-              child: Text(
-                widget.subject.emoji,
-                style: const TextStyle(fontSize: 14),
+        children:[
+          if (!isUser) ...[ CircleAvatar(
+            radius: 16, backgroundColor: widget.subject.color.withOpacity(0.15),
+            child: Text(widget.subject.emoji,
+                style: const TextStyle(fontSize: 14)),
+          ), const SizedBox(width: 6)],
+
+          Flexible(child: Container(
+            constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width * 0.80),
+            decoration: BoxDecoration(
+              color: isUser ? widget.subject.color : const Color(0xFFF0F0F0),
+              borderRadius: BorderRadius.only(
+                topLeft    : const Radius.circular(18),
+                topRight   : const Radius.circular(18),
+                bottomLeft : Radius.circular(isUser ? 18 : 4),
+                bottomRight: Radius.circular(isUser ? 4 : 18),
               ),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06),
+                  blurRadius: 4, offset: const Offset(0,2))],
             ),
-            const SizedBox(width: 6),
-          ],
-
-          // Nội dung bubble
-          Flexible(
-            child: Container(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.78,
-              ),
-              decoration: BoxDecoration(
-                color: isUser
-                    ? widget.subject.color
-                    : const Color(0xFFF0F0F0),
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(18),
-                  topRight: const Radius.circular(18),
-                  bottomLeft: Radius.circular(isUser ? 18 : 4),
-                  bottomRight: Radius.circular(isUser ? 4 : 18),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.06),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children:[
+                // Ảnh đính kèm
+                if (m.imageBase64 != null)
+                  ClipRRect(
+                    borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(18), topRight: Radius.circular(18)),
+                    child: Image.memory(base64Decode(m.imageBase64!),
+                        fit: BoxFit.cover, width: double.infinity, height: 160),
                   ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Hiển thị ảnh đính kèm nếu có
-                  if (msg.imageBase64 != null)
-                    ClipRRect(
-                      borderRadius: const BorderRadius.only(
-                        topLeft: Radius.circular(18),
-                        topRight: Radius.circular(18),
-                      ),
-                      child: Image.memory(
-                        base64Decode(msg.imageBase64!),
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        height: 180,
-                      ),
-                    ),
 
-                  // Text tin nhắn với hỗ trợ markdown đơn giản
+                // OCR badge
+                if (m.ocrText != null && m.ocrText!.isNotEmpty && isUser)
                   Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      12,
-                      msg.imageBase64 != null ? 8 : 10,
-                      12,
-                      msg.sources.isNotEmpty && !isUser ? 6 : 10,
+                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal:8, vertical:4),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.25),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text('📝 OCR: ${m.ocrText!.length > 60
+                          ? '${m.ocrText!.substring(0,60)}…' : m.ocrText!}',
+                        style: const TextStyle(color: Colors.white70,
+                            fontSize: 11, fontStyle: FontStyle.italic),
+                      ),
                     ),
-                    child: _buildMessageText(msg.text, isUser),
                   ),
 
-                  // Hiển thị danh sách nguồn tham khảo thực tế (Lời Giải Hay, VietJack...)
-                  if (!isUser && msg.sources.isNotEmpty)
-                    Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: widget.subject.color.withOpacity(0.25),
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '📚 Nguồn tham khảo đã đối chiếu:',
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w700,
-                              color: widget.subject.color,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          ...msg.sources.take(5).map(
-                                (src) => InkWell(
-                                  onTap: () async {
-                                    await Clipboard.setData(
-                                        ClipboardData(text: src.uri));
-                                    if (!mounted) return;
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                            'Đã sao chép link nguồn: ${src.title}'),
-                                        behavior: SnackBarBehavior.floating,
-                                        duration: const Duration(seconds: 2),
-                                      ),
-                                    );
-                                  },
-                                  child: Padding(
-                                    padding:
-                                        const EdgeInsets.symmetric(vertical: 2),
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.link,
-                                            size: 13,
-                                            color: widget.subject.color),
-                                        const SizedBox(width: 4),
-                                        Expanded(
-                                          child: Text(
-                                            src.title,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              fontSize: 11.5,
-                                              color: Colors.blue.shade800,
-                                              decoration:
-                                                  TextDecoration.underline,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
+                // Nội dung text
+                Padding(
+                  padding: EdgeInsets.fromLTRB(12,
+                      (m.imageBase64 != null || (m.ocrText != null && m.ocrText!.isNotEmpty)) ? 6 : 10,
+                      12, 10),
+                  child: _richText(m.text, isUser),
+                ),
 
-          // Avatar người dùng
-          if (isUser) ...[
-            const SizedBox(width: 6),
-            CircleAvatar(
-              radius: 16,
-              backgroundColor: widget.subject.color,
-              child: const Icon(Icons.person, size: 18, color: Colors.white),
+                // Streaming cursor
+                if (streaming)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                    child: Container(width: 10, height: 14,
+                        color: Colors.grey.shade500),
+                  ),
+              ],
             ),
-          ],
+          )),
+
+          if (isUser) ...[ const SizedBox(width: 6), CircleAvatar(
+            radius: 16, backgroundColor: widget.subject.color,
+            child: const Icon(Icons.person, size: 18, color: Colors.white),
+          )],
         ],
       ),
     );
   }
 
-  // Render text hỗ trợ **bold** và newlines
-  Widget _buildMessageText(String text, bool isUser) {
-    final baseColor = isUser ? Colors.white : const Color(0xFF212121);
-
+  Widget _richText(String text, bool isUser) {
+    final base = isUser ? Colors.white : const Color(0xFF212121);
     if (!text.contains('**') && !text.contains('\n')) {
-      return Text(
-        text,
-        style: TextStyle(color: baseColor, fontSize: 14.5, height: 1.45),
-      );
+      return Text(text,
+          style: TextStyle(color: base, fontSize: 14.5, height: 1.45));
     }
-
-    // Parse **bold** đơn giản
     final spans = <InlineSpan>[];
-    final regex = RegExp(r'\*\*(.*?)\*\*');
-    int lastEnd = 0;
-
-    for (final match in regex.allMatches(text)) {
-      if (match.start > lastEnd) {
-        final before = text.substring(lastEnd, match.start);
-        spans.add(TextSpan(
-          text: before,
-          style: TextStyle(
-              color: baseColor, fontSize: 14.5, height: 1.45),
-        ));
-      }
-      spans.add(TextSpan(
-        text: match.group(1),
-        style: TextStyle(
-          color: baseColor,
-          fontSize: 14.5,
-          height: 1.45,
-          fontWeight: FontWeight.w700,
-        ),
-      ));
-      lastEnd = match.end;
+    final re = RegExp(r'\*\*(.*?)\*\*');
+    int end = 0;
+    for (final m in re.allMatches(text)) {
+      if (m.start > end) spans.add(TextSpan(text: text.substring(end, m.start),
+          style: TextStyle(color: base, fontSize: 14.5, height: 1.45)));
+      spans.add(TextSpan(text: m.group(1),
+          style: TextStyle(color: base, fontSize: 14.5, height: 1.45,
+              fontWeight: FontWeight.w700)));
+      end = m.end;
     }
-
-    if (lastEnd < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(lastEnd),
-        style: TextStyle(
-            color: baseColor, fontSize: 14.5, height: 1.45),
-      ));
-    }
-
+    if (end < text.length) spans.add(TextSpan(text: text.substring(end),
+        style: TextStyle(color: base, fontSize: 14.5, height: 1.45)));
     return Text.rich(TextSpan(children: spans));
   }
 
-  // Bubble loading (đang chờ AI phản hồi)
-  Widget _buildLoadingBubble() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: widget.subject.color.withOpacity(0.15),
-            child: Text(widget.subject.emoji,
-                style: const TextStyle(fontSize: 14)),
+  Widget _loadingBubble() => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(children:[
+      CircleAvatar(radius:16,
+          backgroundColor: widget.subject.color.withOpacity(0.15),
+          child: Text(widget.subject.emoji,
+              style: const TextStyle(fontSize:14))),
+      const SizedBox(width:6),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal:16, vertical:12),
+        decoration: BoxDecoration(color: const Color(0xFFF0F0F0),
+            borderRadius: BorderRadius.circular(18)),
+        child: Row(mainAxisSize: MainAxisSize.min, children:[
+          _Dot(color: widget.subject.color, delay: 0),
+          const SizedBox(width: 4),
+          _Dot(color: widget.subject.color, delay: 150),
+          const SizedBox(width: 4),
+          _Dot(color: widget.subject.color, delay: 300),
+        ]),
+      ),
+    ]),
+  );
+
+  // ─── Input area ───────────────────────────────────────────
+  Widget _inputArea() => Container(
+    decoration: BoxDecoration(color: Colors.white,
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08),
+            blurRadius: 8, offset: const Offset(0,-2))]),
+    child: SafeArea(top: false, child: Column(mainAxisSize: MainAxisSize.min, children:[
+
+      // Preview ảnh + OCR
+      if (_img != null) _imgPreview(),
+
+      Padding(
+        padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children:[
+          // Nút ảnh
+          IconButton(
+            icon: _isOcring
+                ? SizedBox(width:22, height:22,
+                    child: CircularProgressIndicator(
+                        strokeWidth:2, color: widget.subject.color))
+                : Icon(Icons.add_a_photo_outlined, color: widget.subject.color),
+            tooltip: 'Chụp/chọn ảnh đề bài',
+            onPressed: _isOcring ? null : _showImgMenu,
           ),
-          const SizedBox(width: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+
+          // Text field
+          Expanded(child: Container(
             decoration: BoxDecoration(
-              color: const Color(0xFFF0F0F0),
-              borderRadius: BorderRadius.circular(18),
+              color: const Color(0xFFF5F5F5),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: widget.subject.color.withOpacity(0.3)),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _LoadingDot(color: widget.subject.color, delay: 0),
-                const SizedBox(width: 4),
-                _LoadingDot(color: widget.subject.color, delay: 150),
-                const SizedBox(width: 4),
-                _LoadingDot(color: widget.subject.color, delay: 300),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Khu vực nhập liệu phía dưới
-  Widget _buildInputArea() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 8,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Preview ảnh đã chọn
-            if (_selectedImage != null) _buildImagePreview(),
-
-            // Row nhập liệu
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  // Nút chọn ảnh
-                  IconButton(
-                    icon: Icon(
-                      Icons.add_a_photo_outlined,
-                      color: widget.subject.color,
-                    ),
-                    tooltip: 'Chụp/chọn ảnh bài tập',
-                    onPressed: _showImageSourceMenu,
-                  ),
-
-                  // Ô nhập văn bản
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF5F5F5),
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(
-                          color: widget.subject.color.withOpacity(0.3),
-                        ),
-                      ),
-                      child: TextField(
-                        controller: _inputController,
-                        maxLines: 4,
-                        minLines: 1,
-                        keyboardType: TextInputType.multiline,
-                        textInputAction: TextInputAction.newline,
-                        style: const TextStyle(fontSize: 14.5),
-                        decoration: InputDecoration(
-                          hintText:
-                              'Nhập câu hỏi về môn ${widget.subject.name}...',
-                          hintStyle: TextStyle(
-                              color: Colors.grey.shade500, fontSize: 14),
-                          border: InputBorder.none,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 10,
-                          ),
-                        ),
-                        onSubmitted: (_) => _sendMessage(),
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(width: 6),
-
-                  // Nút gửi
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    child: Material(
-                      color: widget.subject.color,
-                      borderRadius: BorderRadius.circular(24),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(24),
-                        onTap: _isLoading ? null : _sendMessage,
-                        child: Container(
-                          padding: const EdgeInsets.all(10),
-                          child: _isLoading
-                              ? SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : const Icon(
-                                  Icons.send_rounded,
-                                  color: Colors.white,
-                                  size: 22,
-                                ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+            child: TextField(
+              controller: _input,
+              maxLines: 4, minLines: 1,
+              keyboardType: TextInputType.multiline,
+              style: const TextStyle(fontSize: 14.5),
+              decoration: InputDecoration(
+                hintText: 'Hỏi về môn ${widget.subject.name}…',
+                hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 14),
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
               ),
+              onSubmitted: (_) => _send(),
             ),
-          ],
-        ),
-      ),
-    );
-  }
+          )),
 
-  // Preview ảnh đã chọn với nút xóa
-  Widget _buildImagePreview() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Image.file(
-              _selectedImage!,
-              height: 80,
-              width: 80,
-              fit: BoxFit.cover,
-            ),
-          ),
-          // Nút X xóa ảnh
-          Positioned(
-            top: -6,
-            right: -6,
-            child: GestureDetector(
-              onTap: _clearImage,
+          const SizedBox(width: 6),
+
+          // Nút gửi
+          Material(
+            color: _isStreaming
+                ? Colors.grey.shade400
+                : widget.subject.color,
+            borderRadius: BorderRadius.circular(24),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: (_isStreaming || _isOcring) ? null : _send,
               child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: const BoxDecoration(
-                  color: Colors.red,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.close, size: 14, color: Colors.white),
+                padding: const EdgeInsets.all(10),
+                child: _isStreaming
+                    ? const SizedBox(width:22, height:22,
+                        child: CircularProgressIndicator(
+                            strokeWidth:2, color:Colors.white))
+                    : const Icon(Icons.send_rounded,
+                        color: Colors.white, size: 22),
               ),
             ),
           ),
-          // Label nhỏ
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.black54,
-                borderRadius: const BorderRadius.only(
-                  bottomLeft: Radius.circular(10),
-                  bottomRight: Radius.circular(10),
-                ),
-              ),
-              child: const Text(
-                'Ảnh đính kèm',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white, fontSize: 9),
-              ),
-            ),
-          ),
-        ],
+        ]),
       ),
-    );
-  }
+    ])),
+  );
+
+  Widget _imgPreview() => Container(
+    margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+    child: Stack(clipBehavior: Clip.none, children:[
+      ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.file(_img!, height:80, width:80, fit:BoxFit.cover),
+      ),
+      Positioned(top:-6, right:-6, child: GestureDetector(
+        onTap: _clearImg,
+        child: Container(
+          padding: const EdgeInsets.all(2),
+          decoration: const BoxDecoration(color:Colors.red, shape:BoxShape.circle),
+          child: const Icon(Icons.close, size:14, color:Colors.white),
+        ),
+      )),
+      if (_ocrText != null && _ocrText!.isNotEmpty)
+        Positioned(left:88, top:0, right:0,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.green.shade200),
+            ),
+            child: Text(
+              '✅ OCR đọc được ${_ocrText!.length} ký tự:\n'
+              '${_ocrText!.length > 80 ? '${_ocrText!.substring(0,80)}…' : _ocrText!}',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF2E7D32)),
+            ),
+          ),
+        )
+      else if (_isOcring)
+        Positioned(left:88, top:0, right:0,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8)),
+            child: const Text('⏳ Đang đọc chữ từ ảnh…',
+                style: TextStyle(fontSize:11, color: Colors.grey)),
+          ),
+        )
+      else if (_ocrText != null && _ocrText!.isEmpty)
+        Positioned(left:88, top:0, right:0,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200)),
+            child: const Text('⚠️ Không đọc được chữ từ ảnh.\nVui lòng gõ đề bài vào ô bên dưới.',
+                style: TextStyle(fontSize:11, color: Colors.orange)),
+          ),
+        ),
+    ]),
+  );
 }
 
-// ============================================================
-// Dot animation loading (3 chấm nhấp nhô)
-// ============================================================
-class _LoadingDot extends StatefulWidget {
+// ─── Dot animation ──────────────────────────────────────────
+class _Dot extends StatefulWidget {
   final Color color;
-  final int delay;
-
-  const _LoadingDot({required this.color, required this.delay});
-
+  final int   delay;
+  const _Dot({required this.color, required this.delay});
   @override
-  State<_LoadingDot> createState() => _LoadingDotState();
+  State<_Dot> createState() => _DotState();
 }
 
-class _LoadingDotState extends State<_LoadingDot>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
-
+class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
+  late AnimationController _c;
+  late Animation<double>   _a;
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    );
-
-    _animation = Tween(begin: 0.0, end: -6.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
-
-    // Delay trước khi bắt đầu animation
+    _c = AnimationController(vsync:this,
+        duration: const Duration(milliseconds:600));
+    _a = Tween(begin:0.0, end:-6.0).animate(
+        CurvedAnimation(parent:_c, curve:Curves.easeInOut));
     Future.delayed(Duration(milliseconds: widget.delay), () {
-      if (mounted) _controller.repeat(reverse: true);
+      if (mounted) _c.repeat(reverse:true);
     });
   }
-
+  @override void dispose() { _c.dispose(); super.dispose(); }
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _animation,
-      builder: (_, __) => Transform.translate(
-        offset: Offset(0, _animation.value),
-        child: Container(
-          width: 7,
-          height: 7,
-          decoration: BoxDecoration(
-            color: widget.color,
-            shape: BoxShape.circle,
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _a,
+    builder: (_,__) => Transform.translate(offset: Offset(0, _a.value),
+      child: Container(width:7, height:7,
+          decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle)),
+    ),
+  );
 }
 
 // ============================================================
-// Sheet cài đặt API Key & Model AI
+// SETTINGS SHEET
 // ============================================================
 class SettingsSheet extends StatefulWidget {
   const SettingsSheet({super.key});
-
   @override
   State<SettingsSheet> createState() => _SettingsSheetState();
 }
 
 class _SettingsSheetState extends State<SettingsSheet> {
-  final TextEditingController _keyController = TextEditingController();
-  final TextEditingController _proxyController = TextEditingController();
-  String _selectedModel = defaultGeminiModel;
-  bool _obscureText = true;
-  bool _isSaving = false;
-  bool _saved = false;
+  bool   _loading      = true;
+  bool?  _liteExists;
+  bool?  _stdExists;
+  bool   _deleting     = false;
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
-  }
-
-  // Tải API key, proxy URL và model đã lưu
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    final key = prefs.getString('gemini_api_key') ?? '';
-    final proxy = prefs.getString('worker_proxy_url') ?? defaultWorkerProxyUrl;
-    final savedModel = prefs.getString('gemini_model') ?? defaultGeminiModel;
-    final validModel = geminiModelOptions.any((m) => m.id == savedModel)
-        ? savedModel
-        : defaultGeminiModel;
-
-    setState(() {
-      _keyController.text = key;
-      _proxyController.text = proxy;
-      _selectedModel = validModel;
-    });
-  }
-
-  // Lưu API key, proxy URL và model
-  Future<void> _saveSettings() async {
-    final key = _keyController.text.trim();
-    final proxy = _proxyController.text.trim();
-    if (key.isEmpty && proxy.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Vui lòng nhập API Key hoặc Worker Proxy URL'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    setState(() => _isSaving = true);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('gemini_api_key', key);
-    await prefs.setString('worker_proxy_url', proxy);
-    await prefs.setString('gemini_model', _selectedModel);
-
-    setState(() {
-      _isSaving = false;
-      _saved = true;
-    });
-
-    await Future.delayed(const Duration(seconds: 1));
-    if (mounted) Navigator.pop(context);
+    ModelManager.instance.addListener(_onMM);
+    _refresh();
   }
 
   @override
   void dispose() {
-    _keyController.dispose();
-    _proxyController.dispose();
+    ModelManager.instance.removeListener(_onMM);
     super.dispose();
+  }
+
+  void _onMM() => setState(() {});
+
+  Future<void> _refresh() async {
+    setState(() => _loading = true);
+    _liteExists = await ModelManager.instance.isDownloaded(ModelChoice.lite);
+    _stdExists  = await ModelManager.instance.isDownloaded(ModelChoice.standard);
+    if (mounted) setState(() => _loading = false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final mm = ModelManager.instance;
     return Padding(
-      // Tránh bàn phím che mất nội dung
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: SingleChildScrollView(
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Tiêu đề
-              Row(
-                children: [
-                  const Icon(Icons.settings, color: SubjectColors.toan),
-                  const SizedBox(width: 10),
-                  const Expanded(
-                    child: Text(
-                      'Cài đặt AI & API Key',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: SubjectColors.toan.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Text(
-                      'v$appVersion',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: SubjectColors.toan,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(child: Container(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize:MainAxisSize.min, crossAxisAlignment:CrossAxisAlignment.start, children:[
 
-              const SizedBox(height: 8),
+          // Header
+          Row(children:[
+            const Icon(Icons.settings, color: _Colors.toan),
+            const SizedBox(width: 10),
+            const Expanded(child: Text('Cài đặt & Quản lý AI',
+                style: TextStyle(fontSize:18, fontWeight:FontWeight.w700))),
+            Chip(label: Text('v$appVersion',
+                style: const TextStyle(fontSize:11, fontWeight:FontWeight.w700,
+                    color: _Colors.toan))),
+            IconButton(icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context)),
+          ]),
 
-              // Thẻ thông tin tác giả
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: SubjectColors.toan.withOpacity(0.08),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                      color: SubjectColors.toan.withOpacity(0.25)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
-                    Text(
-                      '👨‍🎓 Phát triển bởi: $authorName',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13.5,
-                        color: SubjectColors.toan,
-                      ),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      '$authorClassSchool • Phiên bản v$appVersion',
-                      style: TextStyle(fontSize: 12.5),
-                    ),
-                  ],
-                ),
-              ),
+          const SizedBox(height: 8),
 
-              const SizedBox(height: 12),
-
-              // Hướng dẫn
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFFF8E1),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFFFCC80)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: const [
-                    Text(
-                      '📌 Hướng dẫn lấy API Key miễn phí:',
-                      style:
-                          TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-                    ),
-                    SizedBox(height: 6),
-                    Text(
-                      '1. Truy cập aistudio.google.com\n'
-                      '2. Đăng nhập tài khoản Google\n'
-                      '3. Chọn "Get API Key" → "Create API Key"\n'
-                      '4. Sao chép và dán vào ô bên dưới\n\n'
-                      '⚡ Mặc định dùng Gemini Flash-Lite (nhanh, miễn phí, tự dự phòng khi bận).',
-                      style: TextStyle(fontSize: 12.5, height: 1.5),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // Chọn Model Gemini Flash / Flash-Lite
-              DropdownButtonFormField<String>(
-                value: _selectedModel,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: 'Mô hình AI (Flash / Flash-Lite)',
-                  prefixIcon: const Icon(Icons.auto_awesome_outlined),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  filled: true,
-                  fillColor: const Color(0xFFF5F5F5),
-                ),
-                items: geminiModelOptions
-                    .map(
-                      (m) => DropdownMenuItem<String>(
-                        value: m.id,
-                        child: Text(
-                          m.label,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  if (value != null) {
-                    setState(() => _selectedModel = value);
-                  }
-                },
-              ),
-              const SizedBox(height: 6),
-              Text(
-                geminiModelOptions
-                    .firstWhere(
-                      (m) => m.id == _selectedModel,
-                      orElse: () => geminiModelOptions.first,
-                    )
-                    .subtitle,
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-              ),
-
-              const SizedBox(height: 14),
-
-              // Ô nhập API Key
-              TextField(
-                controller: _keyController,
-                obscureText: _obscureText,
-                decoration: InputDecoration(
-                  labelText: 'Gemini API Key',
-                  hintText: 'AIzaSy...',
-                  prefixIcon: const Icon(Icons.vpn_key_outlined),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscureText
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
-                    ),
-                    onPressed: () =>
-                        setState(() => _obscureText = !_obscureText),
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  filled: true,
-                  fillColor: const Color(0xFFF5F5F5),
-                ),
-              ),
-
-              const SizedBox(height: 14),
-
-              // Ô nhập Worker Proxy URL (tùy chọn)
-              TextField(
-                controller: _proxyController,
-                keyboardType: TextInputType.url,
-                decoration: InputDecoration(
-                  labelText: 'Cloudflare Worker URL (Tùy chọn)',
-                  hintText: 'https://gia-su-proxy.xxxx.workers.dev',
-                  helperText: 'Nếu có Worker URL thì không cần nhập API Key',
-                  prefixIcon: const Icon(Icons.cloud_outlined),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  filled: true,
-                  fillColor: const Color(0xFFF5F5F5),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              // Nút lưu
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _isSaving ? null : _saveSettings,
-                  style: FilledButton.styleFrom(
-                    backgroundColor:
-                        _saved ? Colors.green : SubjectColors.toan,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  icon: _isSaving
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : Icon(_saved ? Icons.check : Icons.save_outlined),
-                  label: Text(
-                    _isSaving
-                        ? 'Đang lưu...'
-                        : _saved
-                            ? 'Đã lưu thành công!'
-                            : 'Lưu cài đặt',
-                    style: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 8),
-            ],
+          // Tác giả
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _Colors.toan.withOpacity(0.07),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _Colors.toan.withOpacity(0.2)),
+            ),
+            child: const Column(crossAxisAlignment:CrossAxisAlignment.start,
+              children:[
+                Text('👨‍🎓 Phát triển bởi: $authorName',
+                    style: TextStyle(fontWeight:FontWeight.w700, fontSize:13.5,
+                        color: _Colors.toan)),
+                SizedBox(height: 2),
+                Text('$authorSchool • Phiên bản v$appVersion',
+                    style: TextStyle(fontSize:12.5)),
+              ],
+            ),
           ),
-        ),
-      ),
+
+          const SizedBox(height: 16),
+          const Text('🧠 Quản lý Model AI (Qwen 2.5)',
+              style: TextStyle(fontSize:14, fontWeight:FontWeight.w700)),
+          const SizedBox(height: 2),
+          const Text('Model chạy hoàn toàn trên điện thoại — không cần internet sau khi tải.',
+              style: TextStyle(fontSize:12, color:Colors.grey)),
+          const SizedBox(height: 10),
+
+          if (_loading)
+            const Center(child: CircularProgressIndicator())
+          else ...ModelChoice.values.map((c) {
+            final info     = kModels[c]!;
+            final exists   = c == ModelChoice.lite ? _liteExists! : _stdExists!;
+            final isActive = mm.choice == c && mm.state == ModelState.ready;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isActive
+                      ? Colors.green.shade50
+                      : const Color(0xFFF5F5F5),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: isActive
+                          ? Colors.green.shade300
+                          : Colors.grey.shade300),
+                ),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal:14, vertical:4),
+                  title: Text(info.name,
+                      style: TextStyle(fontWeight:FontWeight.w700,
+                          fontSize:13.5,
+                          color: isActive ? Colors.green.shade800 : null)),
+                  subtitle: Text(
+                    info.description + (exists
+                        ? '\n✅ Đã tải ${(info.sizeGB * 1024).toStringAsFixed(0)} MB'
+                        : '\n📥 Chưa tải'),
+                    style: TextStyle(fontSize:12,
+                        color: isActive ? Colors.green.shade700 : null),
+                  ),
+                  trailing: exists
+                      ? PopupMenuButton<String>(
+                          icon: const Icon(Icons.more_vert),
+                          onSelected: (v) async {
+                            if (v == 'delete') {
+                              setState(() => _deleting = true);
+                              await mm.deleteModel();
+                              await _refresh();
+                              setState(() => _deleting = false);
+                            } else if (v == 'load') {
+                              Navigator.pop(context);
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            if (!isActive) const PopupMenuItem(
+                                value:'load',
+                                child: Text('Khởi động lại app để dùng')),
+                            const PopupMenuItem(
+                                value:'delete',
+                                child: Text('Xóa khỏi máy',
+                                    style:TextStyle(color:Colors.red))),
+                          ],
+                        )
+                      : FilledButton.icon(
+                          onPressed: mm.state == ModelState.downloading
+                              ? null
+                              : () {
+                                  Navigator.pop(context);
+                                  mm.download(c);
+                                },
+                          icon: const Icon(Icons.download, size:16),
+                          label: const Text('Tải về', style:TextStyle(fontSize:12)),
+                          style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal:12, vertical:6)),
+                        ),
+                ),
+              ),
+            );
+          }),
+
+          if (_deleting)
+            const Center(child: Padding(
+              padding: EdgeInsets.all(8),
+              child: CircularProgressIndicator(),
+            )),
+
+          const SizedBox(height: 8),
+
+          // Thông tin
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF8E1),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFFFCC80)),
+            ),
+            child: const Column(crossAxisAlignment:CrossAxisAlignment.start,
+              children:[
+                Text('ℹ️ Thông tin kỹ thuật:',
+                    style:TextStyle(fontWeight:FontWeight.w700, fontSize:12.5)),
+                SizedBox(height:6),
+                Text(
+                  '• AI engine: llama.cpp + Qwen 2.5 (mã nguồn mở)\n'
+                  '• OCR engine: Google ML Kit (nhận diện chữ từ ảnh)\n'
+                  '• Yêu cầu: Android 8.0+ (ARM64), RAM ≥ 3 GB\n'
+                  '• Môn hỗ trợ: Toán, Vật Lý, Hóa Học, Tiếng Anh',
+                  style: TextStyle(fontSize:12, height:1.6),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 8),
+        ]),
+      )),
     );
   }
 }

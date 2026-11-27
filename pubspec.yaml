@@ -1,23 +1,32 @@
 name: gia_su_tu_duy
-description: Ứng dụng gia sư Socratic cho học sinh Việt Nam — Gia Sư Tư Duy
+description: Ứng dụng gia sư AI mã nguồn mở tích hợp trực tiếp — Gia Sư Tư Duy
 publish_to: 'none'
-version: 1.0.3+7
+version: 1.0.4+8
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: '>=3.4.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
 
-  # HTTP client để gọi Gemini API
+  # HTTP client để tải model GGUF & tra cứu VietJack / Lời Giải Hay
   http: ^1.2.0
 
   # Chọn ảnh từ camera hoặc thư viện
   image_picker: ^1.1.2
 
-  # Lưu trữ API Key cục bộ
+  # Lưu trữ cài đặt cục bộ
   shared_preferences: ^2.3.2
+
+  # Đường dẫn thư mục cục bộ lưu file model AI (.gguf)
+  path_provider: 2.1.5
+
+  # Engine AI mã nguồn mở chạy GGUF offline trên Android (llama.cpp)
+  llama_flutter_android: ^0.2.6
+
+  # OCR nhận diện chữ viết / đề bài từ ảnh hoàn toàn offline trên máy
+  google_mlkit_text_recognition: 0.15.0
 
   # Icons Material mặc định
   cupertino_icons: ^1.0.8
@@ -29,3 +38,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/curriculum_index.json

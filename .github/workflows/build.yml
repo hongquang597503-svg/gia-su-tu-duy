@@ -33,6 +33,15 @@ jobs:
           channel: 'stable'
           cache: true
 
+      # 3b. Cài NDK r27 và CMake 3.22.1 cho llama.cpp (llama_flutter_android)
+      - name: 🛠️ Setup Android NDK r27 & CMake
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -n 1)
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "ndk;27.0.12077973" "cmake;3.22.1"
+
       # 4. Kiểm tra Flutter
       - name: 🔍 Flutter doctor
         run: flutter doctor -v
@@ -76,26 +85,19 @@ jobs:
           body: |
             ## 📱 Gia Sư Tư Duy — Phiên bản v${{ steps.ver.outputs.version }}
 
-            ### Điểm mới ở bản v${{ steps.ver.outputs.version }}:
-            - 📖 Chế độ **Giải chi tiết chính xác** kết hợp tìm kiếm & đối chiếu nguồn **Lời Giải Hay, VietJack...** kèm hiển thị **tên nguồn tham khảo**
-            - 💡 Vẫn giữ tùy chọn chuyển nhanh sang **Chế độ Gợi mở Socratic** nếu muốn tự rèn tư duy
+            ### Điểm mới ở bản v${{ steps.ver.outputs.version }} (AI Mã Nguồn Mở Tích Hợp):
+            - 🧠 **Tích hợp sẵn engine AI mã nguồn mở (`llama.cpp` + Qwen 2.5)** chạy trực tiếp trên điện thoại Android (ARM64) — **không cần API Key**, **không phụ thuộc app hay dịch vụ AI thứ 3**
+            - 📦 **APK gọn nhẹ (~40MB)** — mở app lần đầu nhấn **Tải AI về máy** (chọn bản **Qwen 2.5 1.5B ~1.04 GB** hoặc **Qwen 2.5 0.5B ~469 MB** từ HuggingFace) rồi dùng **vĩnh viễn** ngay cả khi ngoại tuyến
+            - 📷 **Nhận diện chữ từ ảnh đề bài offline (ML Kit OCR)** — chụp ảnh hoặc chọn từ thư viện để đọc đề bài trực tiếp trên máy
+            - 📚 **Tự tra cứu trực tiếp VietJack & Lời Giải Hay** dựa trên chỉ mục 1.980 đầu sách SGK/SBT (khi có mạng) và trích dẫn rõ nguồn tham khảo
+            - 📖 Chế độ **Giải chi tiết + Nguồn** hoặc 💡 **Gợi mở Socratic** từng bước
             - 👨‍🎓 Tác giả: **Nguyễn Hồng Quang — Lớp 10A10 — THPT Châu Thành 1**
-            - ⚡ Hỗ trợ **Gemini 3.5 Flash-Lite**, **Gemini 3.8 Flash**, tự động dự phòng & hỗ trợ **Cloudflare Worker Proxy**
 
-            ### Cách cài đặt:
-            1. Tải file `.apk` bên dưới về điện thoại Android
-            2. Mở file và nhấn **Cài đặt** (cho phép cài từ nguồn không xác định nếu cần)
-            3. Mở app → Nhấn ⚙️ → Dán Gemini API Key miễn phí (hoặc Worker Proxy URL)
-            4. Bắt đầu học! 🚀
-
-            ### Lấy API Key miễn phí:
-            Vào [aistudio.google.com](https://aistudio.google.com) → Get API Key → Create API Key
-
-            ### Tính năng:
-            - 📐 Toán | ⚡ Vật Lý | 🧪 Hóa Học | 🌍 Tiếng Anh
-            - 🤖 AI gia sư Socratic — gợi mở từng bước, không cho đáp án thẳng
-            - 📸 Chụp ảnh đề bài gửi thẳng vào chat
-            - 💬 Hỗ trợ hội thoại nhiều lượt
+            ### Cách cài đặt & sử dụng:
+            1. Tải file `.apk` bên dưới về điện thoại Android (ARM64, Android 8.0+)
+            2. Mở file và nhấn **Cài đặt**
+            3. Mở app → Nhấn **Tải AI về máy** (khoảng 469 MB hoặc 1.04 GB tùy chọn)
+            4. Bắt đầu hỏi bài & chụp đề bài ngay — không cần đăng nhập hay API Key! 🚀
           files: artifacts/GiaSuTuDuy-v${{ steps.ver.outputs.version }}.apk
           draft: false
           prerelease: false
