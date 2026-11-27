@@ -76,7 +76,7 @@ class ModelManager extends ChangeNotifier {
   int          _downloadedBytes  = 0;
   int          _totalBytes       = 0;
   String?      _errorMsg;
-  ModelChoice  _choice           = ModelChoice.lite;
+  ModelChoice  _choice           = ModelChoice.standard;
 
   ModelState  get state           => _state;
   double      get progress        => _progress;

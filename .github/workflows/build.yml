@@ -85,19 +85,19 @@ jobs:
           body: |
             ## 📱 Gia Sư Tư Duy — Phiên bản v${{ steps.ver.outputs.version }}
 
-            ### Điểm mới ở bản v${{ steps.ver.outputs.version }} (AI Mã Nguồn Mở Tích Hợp):
-            - 🧠 **Tích hợp sẵn engine AI mã nguồn mở (`llama.cpp` + Qwen 2.5)** chạy trực tiếp trên điện thoại Android (ARM64) — **không cần API Key**, **không phụ thuộc app hay dịch vụ AI thứ 3**
-            - 📦 **APK gọn nhẹ (~40MB)** — mở app lần đầu nhấn **Tải AI về máy** (chọn bản **Qwen 2.5 1.5B ~1.04 GB** hoặc **Qwen 2.5 0.5B ~469 MB** từ HuggingFace) rồi dùng **vĩnh viễn** ngay cả khi ngoại tuyến
-            - 📷 **Nhận diện chữ từ ảnh đề bài offline (ML Kit OCR)** — chụp ảnh hoặc chọn từ thư viện để đọc đề bài trực tiếp trên máy
-            - 📚 **Tự tra cứu trực tiếp VietJack & Lời Giải Hay** dựa trên chỉ mục 1.980 đầu sách SGK/SBT (khi có mạng) và trích dẫn rõ nguồn tham khảo
-            - 📖 Chế độ **Giải chi tiết + Nguồn** hoặc 💡 **Gợi mở Socratic** từng bước
+            ### ✨ Điểm mới bản v${{ steps.ver.outputs.version }} — AI 1.5B Mạnh Hơn:
+            - 🧠 **Nâng cấp lên model Qwen 2.5 — 1.5B (~1.04 GB)** làm mặc định — giải bài tốt hơn, chính xác hơn so với 0.5B
+            - 🤖 **Chạy hoàn toàn trên điện thoại** (`llama.cpp`) — không cần API Key, không phụ thuộc dịch vụ AI thứ 3
+            - 📷 **OCR đọc ảnh đề bài offline** (Google ML Kit) — chụp ảnh → AI tự đọc & giải
+            - 📚 Tra cứu VietJack & Lời Giải Hay (khi có mạng), trích dẫn rõ nguồn
+            - 📖 Chế độ **Giải chi tiết** hoặc 💡 **Gợi mở Socratic**
             - 👨‍🎓 Tác giả: **Nguyễn Hồng Quang — Lớp 10A10 — THPT Châu Thành 1**
 
             ### Cách cài đặt & sử dụng:
             1. Tải file `.apk` bên dưới về điện thoại Android (ARM64, Android 8.0+)
             2. Mở file và nhấn **Cài đặt**
-            3. Mở app → Nhấn **Tải AI về máy** (khoảng 469 MB hoặc 1.04 GB tùy chọn)
-            4. Bắt đầu hỏi bài & chụp đề bài ngay — không cần đăng nhập hay API Key! 🚀
+            3. Mở app → Nhấn **Tải AI về máy** (~1.04 GB model 1.5B — cần WiFi lần đầu)
+            4. Bắt đầu hỏi bài & chụp đề bài ngay — **không cần đăng nhập hay API Key!** 🚀
           files: artifacts/GiaSuTuDuy-v${{ steps.ver.outputs.version }}.apk
           draft: false
           prerelease: false
