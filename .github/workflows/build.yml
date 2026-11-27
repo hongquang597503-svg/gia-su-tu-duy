@@ -41,37 +41,50 @@ jobs:
       - name: 📦 Get dependencies
         run: flutter pub get
 
-      # 6. Build APK release
+      # 6. Lấy version từ pubspec.yaml (vd: 1.0.1)
+      - name: 🏷️ Extract App Version
+        id: ver
+        run: |
+          APP_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
+          echo "version=$APP_VERSION" >> $GITHUB_OUTPUT
+          echo "Detected app version: $APP_VERSION"
+
+      # 7. Build APK release
       - name: 🔨 Build APK (release)
         run: flutter build apk --release --no-shrink
 
-      # 7. Đổi tên APK
+      # 8. Đổi tên APK
       - name: 📝 Rename APK
         run: |
           mkdir -p artifacts
-          cp build/app/outputs/flutter-apk/app-release.apk artifacts/GiaSuTuDuy-v${{ github.run_number }}.apk
+          cp build/app/outputs/flutter-apk/app-release.apk artifacts/GiaSuTuDuy-v${{ steps.ver.outputs.version }}.apk
 
-      # 8. Upload APK làm artifact (tải về từ Actions tab)
+      # 9. Upload APK làm artifact (tải về từ Actions tab)
       - name: 📤 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GiaSuTuDuy-APK
-          path: artifacts/GiaSuTuDuy-v${{ github.run_number }}.apk
+          name: GiaSuTuDuy-v${{ steps.ver.outputs.version }}-APK
+          path: artifacts/GiaSuTuDuy-v${{ steps.ver.outputs.version }}.apk
           retention-days: 30
 
-      # 9. Tự động tạo GitHub Release với APK đính kèm
+      # 10. Tự động tạo GitHub Release với APK đính kèm
       - name: 🚀 Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "🎓 Gia Sư Tư Duy v1.0.${{ github.run_number }}"
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: "🎓 Gia Sư Tư Duy v${{ steps.ver.outputs.version }}"
           body: |
-            ## 📱 Gia Sư Tư Duy — Bản cập nhật v1.0.${{ github.run_number }}
+            ## 📱 Gia Sư Tư Duy — Phiên bản v${{ steps.ver.outputs.version }}
+
+            ### Điểm mới ở bản v${{ steps.ver.outputs.version }}:
+            - ⚡ Tích hợp sẵn **Gemini 3.5 Flash-Lite** (mặc định: nhẹ, nhanh, tiết kiệm) và **Gemini 3.8 Flash**
+            - 🔄 Tự động chuyển dự phòng sang model Flash-Lite/Flash ổn định khác nếu model chính bận hoặc hết lượt
+            - ⚙️ Cho phép chọn model AI ngay trong phần Cài đặt
 
             ### Cách cài đặt:
             1. Tải file `.apk` bên dưới về điện thoại Android
             2. Mở file và nhấn **Cài đặt** (cho phép cài từ nguồn không xác định nếu cần)
-            3. Mở app → Nhấn ⚙️ → Dán Gemini API Key của bạn
+            3. Mở app → Nhấn ⚙️ → Dán Gemini API Key miễn phí của bạn → Chọn model nếu muốn
             4. Bắt đầu học! 🚀
 
             ### Lấy API Key miễn phí:
@@ -82,7 +95,7 @@ jobs:
             - 🤖 AI gia sư Socratic — gợi mở từng bước, không cho đáp án thẳng
             - 📸 Chụp ảnh đề bài gửi thẳng vào chat
             - 💬 Hỗ trợ hội thoại nhiều lượt
-          files: artifacts/GiaSuTuDuy-v${{ github.run_number }}.apk
+          files: artifacts/GiaSuTuDuy-v${{ steps.ver.outputs.version }}.apk
           draft: false
           prerelease: false
         env:

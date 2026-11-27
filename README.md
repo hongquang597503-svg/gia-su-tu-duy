@@ -47,8 +47,8 @@ flutter build apk --release
 
 ## Tech Stack
 
-- **Flutter** 3.24.5 (Dart)
-- **Google Gemini API** (`gemini-2.5-flash`)
+- **Flutter** 3.24.5 (Dart) — Version **1.0.1**
+- **Google Gemini API** (`gemini-3.5-flash-lite`, `gemini-3.8-flash`, tự động dự phòng sang `gemini-2.5-flash-lite` / `gemini-2.5-flash`)
 - **Packages**: `http`, `image_picker`, `shared_preferences`
 
 ## License

@@ -17,6 +17,46 @@ void main() {
   runApp(const GiaSuTuDuyApp());
 }
 
+// ─── Phiên bản & Cấu hình Model Gemini ─────────────────────
+const String appVersion = '1.0.1';
+const String defaultGeminiModel = 'gemini-3.5-flash-lite';
+
+class GeminiModelOption {
+  final String id;
+  final String label;
+  final String subtitle;
+
+  const GeminiModelOption({
+    required this.id,
+    required this.label,
+    required this.subtitle,
+  });
+}
+
+// Danh sách các model Flash / Flash-Lite (ưu tiên nhẹ, nhanh, free tier cao)
+const List<GeminiModelOption> geminiModelOptions = [
+  GeminiModelOption(
+    id: 'gemini-3.5-flash-lite',
+    label: 'Gemini 3.5 Flash-Lite (Khuyên dùng)',
+    subtitle: 'Siêu nhanh, nhẹ, tối ưu quota miễn phí',
+  ),
+  GeminiModelOption(
+    id: 'gemini-3.8-flash',
+    label: 'Gemini 3.8 Flash',
+    subtitle: 'Thế hệ mới, suy luận Toán/Lý/Hóa mạnh hơn',
+  ),
+  GeminiModelOption(
+    id: 'gemini-2.5-flash-lite',
+    label: 'Gemini 2.5 Flash-Lite',
+    subtitle: 'Bản nhẹ dự phòng ổn định',
+  ),
+  GeminiModelOption(
+    id: 'gemini-2.5-flash',
+    label: 'Gemini 2.5 Flash',
+    subtitle: 'Bản tiêu chuẩn cân bằng',
+  ),
+];
+
 // ─── Màu sắc cho từng môn học ───────────────────────────────
 class SubjectColors {
   static const Color toan = Color(0xFF1565C0);     // Toán – Xanh dương
@@ -400,9 +440,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _inputController.text.trim();
     if (text.isEmpty && _imageBase64 == null) return;
 
-    // Lấy API key từ SharedPreferences
+    // Lấy API key và model đã chọn từ SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     final apiKey = prefs.getString('gemini_api_key') ?? '';
+    final selectedModel =
+        prefs.getString('gemini_model') ?? defaultGeminiModel;
 
     if (apiKey.isEmpty) {
       _showError('Vui lòng nhập Gemini API Key trong cài đặt ⚙️');
@@ -428,7 +470,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
-      final aiResponse = await _callGeminiAPI(apiKey, updatedHistory);
+      final aiResponse =
+          await _callGeminiAPI(apiKey, updatedHistory, selectedModel);
 
       final aiMsg = ChatMessage(role: 'model', text: aiResponse);
       widget.onHistoryUpdate([...updatedHistory, aiMsg]);
@@ -440,16 +483,21 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Gọi Gemini API
+  // Gọi Gemini API với cơ chế tự chuyển dự phòng (fallback) qua các model Flash/Lite
   Future<String> _callGeminiAPI(
-      String apiKey, List<ChatMessage> history) async {
-    const endpoint =
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+      String apiKey, List<ChatMessage> history, String preferredModel) async {
+    // Thứ tự thử model: model đang chọn -> Flash-Lite -> Flash dự phòng
+    final candidateModels = <String>{
+      preferredModel.trim().isEmpty ? defaultGeminiModel : preferredModel.trim(),
+      'gemini-3.5-flash-lite',
+      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-3.8-flash',
+    }.toList();
 
     // Chuyển lịch sử chat thành định dạng API
     final contents = history.map((m) => m.toApiContent()).toList();
 
-    // Body request
     final body = jsonEncode({
       'system_instruction': {
         'parts': [
@@ -463,24 +511,45 @@ class _ChatScreenState extends State<ChatScreen> {
       },
     });
 
-    final response = await http
-        .post(
-          Uri.parse('$endpoint?key=$apiKey'),
-          headers: {'Content-Type': 'application/json'},
-          body: body,
-        )
-        .timeout(const Duration(seconds: 60));
+    Exception? lastError;
 
-    if (response.statusCode != 200) {
-      final err = jsonDecode(response.body);
-      final errMsg = err['error']?['message'] ?? 'Lỗi không xác định';
-      throw Exception('API Error ${response.statusCode}: $errMsg');
+    for (final model in candidateModels) {
+      final endpoint =
+          'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent';
+
+      final response = await http
+          .post(
+            Uri.parse('$endpoint?key=$apiKey'),
+            headers: {'Content-Type': 'application/json'},
+            body: body,
+          )
+          .timeout(const Duration(seconds: 60));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final text = data['candidates']?[0]?['content']?['parts']?[0]?['text']
+            as String?;
+        return text ?? '(Không có phản hồi)';
+      }
+
+      String errMsg = 'Lỗi không xác định';
+      try {
+        final err = jsonDecode(response.body);
+        errMsg = err['error']?['message'] ?? errMsg;
+      } catch (_) {}
+
+      lastError = Exception('API Error ${response.statusCode} ($model): $errMsg');
+
+      // Chỉ thử sang model dự phòng nếu model không tồn tại (404) hoặc quá tải (429/503)
+      final shouldFallback = response.statusCode == 404 ||
+          response.statusCode == 429 ||
+          response.statusCode == 503;
+      if (!shouldFallback) {
+        throw lastError;
+      }
     }
 
-    final data = jsonDecode(response.body);
-    final text = data['candidates']?[0]?['content']?['parts']?[0]?['text']
-        as String?;
-    return text ?? '(Không có phản hồi)';
+    throw lastError ?? Exception('Không thể kết nối tới các model Gemini');
   }
 
   // Hiển thị thông báo lỗi
@@ -992,7 +1061,7 @@ class _LoadingDotState extends State<_LoadingDot>
 }
 
 // ============================================================
-// Sheet cài đặt API Key
+// Sheet cài đặt API Key & Model AI
 // ============================================================
 class SettingsSheet extends StatefulWidget {
   const SettingsSheet({super.key});
@@ -1003,6 +1072,7 @@ class SettingsSheet extends StatefulWidget {
 
 class _SettingsSheetState extends State<SettingsSheet> {
   final TextEditingController _keyController = TextEditingController();
+  String _selectedModel = defaultGeminiModel;
   bool _obscureText = true;
   bool _isSaving = false;
   bool _saved = false;
@@ -1010,20 +1080,26 @@ class _SettingsSheetState extends State<SettingsSheet> {
   @override
   void initState() {
     super.initState();
-    _loadKey();
+    _loadSettings();
   }
 
-  // Tải API key đã lưu
-  Future<void> _loadKey() async {
+  // Tải API key và model đã lưu
+  Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final key = prefs.getString('gemini_api_key') ?? '';
+    final savedModel = prefs.getString('gemini_model') ?? defaultGeminiModel;
+    final validModel = geminiModelOptions.any((m) => m.id == savedModel)
+        ? savedModel
+        : defaultGeminiModel;
+
     setState(() {
       _keyController.text = key;
+      _selectedModel = validModel;
     });
   }
 
-  // Lưu API key
-  Future<void> _saveKey() async {
+  // Lưu API key và model
+  Future<void> _saveSettings() async {
     final key = _keyController.text.trim();
     if (key.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1038,6 +1114,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
     setState(() => _isSaving = true);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('gemini_api_key', key);
+    await prefs.setString('gemini_model', _selectedModel);
 
     setState(() {
       _isSaving = false;
@@ -1061,129 +1138,192 @@ class _SettingsSheetState extends State<SettingsSheet> {
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Tiêu đề
-            Row(
-              children: [
-                const Icon(Icons.settings, color: SubjectColors.toan),
-                const SizedBox(width: 10),
-                const Text(
-                  'Cài đặt Gemini API Key',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
+      child: SingleChildScrollView(
+        child: Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Tiêu đề
+              Row(
+                children: [
+                  const Icon(Icons.settings, color: SubjectColors.toan),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Cài đặt AI & API Key',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
-                ),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(context),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            // Hướng dẫn
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF8E1),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFFFCC80)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  Text(
-                    '📌 Hướng dẫn lấy API Key:',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 13),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: SubjectColors.toan.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      'v$appVersion',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: SubjectColors.toan,
+                      ),
+                    ),
                   ),
-                  SizedBox(height: 6),
-                  Text(
-                    '1. Truy cập aistudio.google.com\n'
-                    '2. Đăng nhập tài khoản Google\n'
-                    '3. Chọn "Get API Key" → "Create API Key"\n'
-                    '4. Sao chép và dán vào ô bên dưới\n\n'
-                    '🔒 API Key được lưu riêng tư trên thiết bị của bạn.',
-                    style: TextStyle(fontSize: 12.5, height: 1.5),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
-            ),
 
-            const SizedBox(height: 16),
+              const SizedBox(height: 8),
 
-            // Ô nhập API Key
-            TextField(
-              controller: _keyController,
-              obscureText: _obscureText,
-              decoration: InputDecoration(
-                labelText: 'Gemini API Key',
-                hintText: 'AIzaSy...',
-                prefixIcon: const Icon(Icons.vpn_key_outlined),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscureText
-                        ? Icons.visibility_outlined
-                        : Icons.visibility_off_outlined,
-                  ),
-                  onPressed: () =>
-                      setState(() => _obscureText = !_obscureText),
+              // Hướng dẫn
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFFCC80)),
                 ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: const [
+                    Text(
+                      '📌 Hướng dẫn lấy API Key miễn phí:',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      '1. Truy cập aistudio.google.com\n'
+                      '2. Đăng nhập tài khoản Google\n'
+                      '3. Chọn "Get API Key" → "Create API Key"\n'
+                      '4. Sao chép và dán vào ô bên dưới\n\n'
+                      '⚡ Mặc định dùng Gemini Flash-Lite (nhanh, miễn phí, tự dự phòng khi bận).',
+                      style: TextStyle(fontSize: 12.5, height: 1.5),
+                    ),
+                  ],
                 ),
-                filled: true,
-                fillColor: const Color(0xFFF5F5F5),
               ),
-            ),
 
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-            // Nút lưu
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: _isSaving ? null : _saveKey,
-                style: FilledButton.styleFrom(
-                  backgroundColor:
-                      _saved ? Colors.green : SubjectColors.toan,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
+              // Chọn Model Gemini Flash / Flash-Lite
+              DropdownButtonFormField<String>(
+                value: _selectedModel,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: 'Mô hình AI (Flash / Flash-Lite)',
+                  prefixIcon: const Icon(Icons.auto_awesome_outlined),
+                  border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
+                  filled: true,
+                  fillColor: const Color(0xFFF5F5F5),
                 ),
-                icon: _isSaving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
+                items: geminiModelOptions
+                    .map(
+                      (m) => DropdownMenuItem<String>(
+                        value: m.id,
+                        child: Text(
+                          m.label,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 14),
                         ),
-                      )
-                    : Icon(_saved ? Icons.check : Icons.save_outlined),
-                label: Text(
-                  _isSaving
-                      ? 'Đang lưu...'
-                      : _saved
-                          ? 'Đã lưu thành công!'
-                          : 'Lưu API Key',
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => _selectedModel = value);
+                  }
+                },
+              ),
+              const SizedBox(height: 6),
+              Text(
+                geminiModelOptions
+                    .firstWhere(
+                      (m) => m.id == _selectedModel,
+                      orElse: () => geminiModelOptions.first,
+                    )
+                    .subtitle,
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+
+              const SizedBox(height: 14),
+
+              // Ô nhập API Key
+              TextField(
+                controller: _keyController,
+                obscureText: _obscureText,
+                decoration: InputDecoration(
+                  labelText: 'Gemini API Key',
+                  hintText: 'AIzaSy...',
+                  prefixIcon: const Icon(Icons.vpn_key_outlined),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscureText
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                    ),
+                    onPressed: () =>
+                        setState(() => _obscureText = !_obscureText),
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: const Color(0xFFF5F5F5),
                 ),
               ),
-            ),
 
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 16),
+
+              // Nút lưu
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _isSaving ? null : _saveSettings,
+                  style: FilledButton.styleFrom(
+                    backgroundColor:
+                        _saved ? Colors.green : SubjectColors.toan,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  icon: _isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : Icon(_saved ? Icons.check : Icons.save_outlined),
+                  label: Text(
+                    _isSaving
+                        ? 'Đang lưu...'
+                        : _saved
+                            ? 'Đã lưu thành công!'
+                            : 'Lưu cài đặt',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
