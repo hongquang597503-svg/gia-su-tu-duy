@@ -99,7 +99,23 @@ class ModelManager extends ChangeNotifier {
 
     // Thử load model đã chọn
     final f = await _modelFile(_choice);
-    if (await f.exists()) { await _load(f); return; }
+    if (await f.exists()) {
+      await _load(f);
+      // Nếu load thất bại → đã xóa file trong _load, reset về notDownloaded
+      if (_state == ModelState.error) {
+        _state = ModelState.notDownloaded;
+        _errorMsg = null;
+        notifyListeners();
+        // Thử model còn lại
+        for (final c in ModelChoice.values) {
+          if (c == _choice) continue;
+          final ff = await _modelFile(c);
+          if (await ff.exists()) { _choice = c; await _load(ff); return; }
+        }
+        return;
+      }
+      return;
+    }
 
     // Thử model còn lại
     for (final c in ModelChoice.values) {
@@ -116,8 +132,20 @@ class ModelManager extends ChangeNotifier {
     return File('${dir.path}/${kModels[c]!.fileName}');
   }
 
-  Future<bool> isDownloaded(ModelChoice c) async =>
-      (await _modelFile(c)).exists();
+  /// Kiểm tra file tồn tại VÀ đủ kích thước (ít nhất 90% so với expected)
+  Future<bool> isDownloaded(ModelChoice c) async {
+    final f = await _modelFile(c);
+    if (!await f.exists()) return false;
+    final size = await f.length();
+    final expected = (kModels[c]!.sizeGB * 1024 * 1024 * 1024).round();
+    return size >= (expected * 0.9).round(); // phải đủ ≥ 90% kích thước
+  }
+
+  /// Xóa file model bị hỏng/thiếu và reset về trạng thái chưa tải
+  Future<void> _deleteCorruptedFile(ModelChoice c) async {
+    final f = await _modelFile(c);
+    if (await f.exists()) await f.delete();
+  }
 
   // ─── Tải model từ HuggingFace ───────────────────────────
   Future<void> download(ModelChoice c) async {
@@ -190,6 +218,16 @@ class ModelManager extends ChangeNotifier {
     _state = ModelState.loadingModel;
     notifyListeners();
     try {
+      // Kiểm tra file tồn tại và không rỗng
+      if (!await file.exists()) {
+        throw Exception('File model không tồn tại');
+      }
+      final fileSize = await file.length();
+      if (fileSize < 1024 * 1024) { // nhỏ hơn 1MB = chắc chắn hỏng
+        await file.delete();
+        throw Exception('File model bị lỗi hoặc tải chưa xong');
+      }
+
       await _ctrl?.dispose();
       _ctrl = llama.LlamaController();
       final gpu = await _ctrl!.detectGpu();
@@ -202,8 +240,12 @@ class ModelManager extends ChangeNotifier {
       _state = ModelState.ready;
     } catch (e) {
       _state    = ModelState.error;
-      _errorMsg = 'Lỗi nạp model: $e';
-      _ctrl     = null;
+      // Nếu load thất bại → xóa file có thể bị hỏng để user tải lại
+      _errorMsg = 'File model bị lỗi hoặc chưa tải xong.\nVui lòng nhấn "Tải lại".';
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+      _ctrl = null;
     }
     notifyListeners();
   }

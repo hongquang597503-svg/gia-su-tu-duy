@@ -1,7 +1,7 @@
 name: gia_su_tu_duy
 description: Ứng dụng gia sư AI mã nguồn mở tích hợp trực tiếp — Gia Sư Tư Duy
 publish_to: 'none'
-version: 1.0.5+9
+version: 1.0.6+10
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
